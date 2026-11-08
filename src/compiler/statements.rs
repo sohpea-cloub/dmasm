@@ -1003,7 +1003,7 @@ fn emit_var_statement(
                 value.simple_evaluate(nowhere).ok()
             }
         };
-        ctx(compiler).declare_static(var.name.as_str(), ty, value);
+        ctx(compiler).declare_static(var.name.as_str(), ty, value, var.value.clone());
         return Ok(());
     }
     // The initializer can't see the variable it initializes

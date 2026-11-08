@@ -43,6 +43,10 @@ pub struct StaticLocal {
     pub scope: String,
     /// Its initial value, when that's a constant.
     pub value: Option<dreammaker::constants::Constant>,
+    /// The code of its initial value, if it has one.
+    pub expression: Option<dreammaker::ast::Expression>,
+    /// Its declared type, which a `new` with no type makes.
+    pub type_path: String,
 }
 
 /// Marks a static local's entry in `ProcCtx::scopes`.
@@ -136,6 +140,7 @@ impl ProcCtx<'_> {
         name: &str,
         ty: String,
         value: Option<dreammaker::constants::Constant>,
+        expression: Option<dreammaker::ast::Expression>,
     ) {
         let number = self.static_locals.iter().filter(|s| *s == name).count() as u32;
         self.static_locals.push(name.to_owned());
@@ -143,6 +148,8 @@ impl ProcCtx<'_> {
             name: name.to_owned(),
             scope: format!("proc:{}#{}", self.proc_path, number),
             value,
+            expression,
+            type_path: ty.clone(),
         });
         self.static_local_types
             .insert((name.to_owned(), number), ty);

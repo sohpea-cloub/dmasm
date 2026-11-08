@@ -169,11 +169,6 @@ fn refuses_what_a_reload_cant_do() {
             "sets pixel_x",
         ),
         (
-            "new-static-not-constant",
-            base.replace("var/a = 1", "var/a = 1\n\tvar/static/list/b = list()"),
-            "new global or static var b starts as",
-        ),
-        (
             "var-decl",
             base.replace("var/a = 1", "var/static/a = 1"),
             "var a's declaration changed",
@@ -384,6 +379,7 @@ fn new_vars_and_their_overrides() {
         var: var.to_owned(),
         flags,
         value,
+        init: None,
     };
     assert_eq!(
         vars,
@@ -698,4 +694,27 @@ fn new_types_with_their_vars_and_procs() {
         .collect();
     inits.sort();
     assert_eq!(inits, ["/obj/thing/my_new", "/obj/thing/my_new/deeper"]);
+}
+
+#[test]
+fn globals_and_statics_that_arent_constants_come_with_code_to_run_once() {
+    let before = "/datum/a\n/datum/a/proc/f()\n\treturn 1\n";
+    let after = "var/list/g = list(1, 2)\n/datum/a\n\tvar/static/list/s = list(3)\n/datum/a/proc/f()\n\tvar/static/datum/a/l = new\n\treturn l\n";
+    let changes = changes("run-once", before, after);
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    for var in &changes.new_vars {
+        assert_eq!(var.value, ConstValue::Null);
+        let init = var
+            .init
+            .as_ref()
+            .unwrap_or_else(|| panic!("no init for {}", var.var));
+        assert!(init
+            .nodes
+            .iter()
+            .any(|n| matches!(n, Node::Instruction(Instruction::Ret, _))));
+    }
+    assert_eq!(changes.new_vars.len(), 2);
+    let statics = &changes.reloads[0].statics;
+    assert_eq!(statics.len(), 1);
+    assert!(statics[0].value.is_none() && statics[0].init.is_some());
 }

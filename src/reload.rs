@@ -75,6 +75,8 @@ pub struct StaticVar {
     pub scope: String,
     /// Its initial value, `None` when that isn't a constant.
     pub value: Option<ConstValue>,
+    /// Otherwise, code that returns it, for the running world to run once.
+    pub init: Option<Box<ProcReload>>,
 }
 
 /// A parameter as BYOND keeps it for a proc.
@@ -247,6 +249,9 @@ pub struct NewVar {
     pub flags: u32,
     /// Its initial value: the declaring type's default, or a global's value.
     pub value: ConstValue,
+    /// For a global or static var whose value isn't a constant, code that
+    /// returns it, for the running world to run once (`value` is null).
+    pub init: Option<Box<ProcReload>>,
 }
 
 /// A type's init proc: what each new instance runs to set the vars whose
@@ -416,22 +421,67 @@ impl Snapshot {
     pub fn compile_reload(&self, key: &ProcKey) -> Result<ProcReload, String> {
         let (_, value) = self.find(key).ok_or_else(|| format!("no proc {key}"))?;
         let compiled = self.compile(key)?;
+        let (ty, _) = self.find(key).ok_or_else(|| format!("no proc {key}"))?;
+        let mut statics = vec![];
+        for s in compiled.statics {
+            let constant = s.value.as_ref().and_then(const_value);
+            let init = match (&constant, &s.expression) {
+                (None, Some(expression)) => Some(Box::new(self.compile_value(
+                    ty,
+                    expression,
+                    &s.type_path,
+                    value_location(expression, value.location),
+                )?)),
+                _ => None,
+            };
+            statics.push(StaticVar {
+                name: s.name,
+                value: constant,
+                scope: s.scope,
+                init,
+            });
+        }
         Ok(ProcReload {
             proc: key.clone(),
             nodes: compiled.nodes,
             locals: compiled.locals,
             params: params(value),
             settings: proc_settings(value)?,
-            statics: compiled
-                .statics
-                .into_iter()
-                .map(|s| StaticVar {
-                    name: s.name,
-                    value: s.value.as_ref().and_then(const_value),
-                    scope: s.scope,
-                })
-                .collect(),
+            statics,
         })
+    }
+
+    /// Compiles code that returns `expression`, evaluated on `ty` (the root
+    /// type for a global): how a global or static var gets a value that isn't
+    /// a constant.
+    pub(crate) fn compile_value(
+        &self,
+        ty: TypeRef,
+        expression: &dreammaker::ast::Expression,
+        declared: &str,
+        location: dreammaker::Location,
+    ) -> Result<ProcReload, String> {
+        use dreammaker::ast::{Expression, Ident, PathOp, Prefab, RelativePath, Spanned, Term};
+        // A `new` with no type makes the var's declared type
+        let mut expression = expression.clone();
+        if let Expression::Base { term, .. } = &mut expression {
+            if let Term::NewImplicit { args } = &term.elem {
+                let mut parts = declared.split('/').filter(|part| !part.is_empty());
+                let Some(first) = parts.next() else {
+                    return Err("`new` with no type, for a var with no type".to_owned());
+                };
+                let mut path = RelativePath::single(PathOp::Slash, Ident::from_nonstatic(first));
+                for part in parts {
+                    path.push((PathOp::Slash, Ident::from_nonstatic(part)));
+                }
+                term.elem = Term::NewPrefab {
+                    prefab: Box::new(Prefab::from(path)),
+                    args: args.clone(),
+                };
+            }
+        }
+        let block: Block = Box::new([Spanned::new(location, Statement::Return(Some(expression)))]);
+        self.compile_synthetic(ty, "(value)", block, ty.get().location)
     }
 
     /// Compiles a type's init proc: an assignment to `src.var` for each of
@@ -464,23 +514,35 @@ impl Snapshot {
                 )
             })
             .collect();
+        self.compile_synthetic(ty, "(init)", block, ty.get().location)
+    }
+
+    /// Compiles code the source doesn't have as a proc of its own, as a proc
+    /// on `ty` called `name`.
+    fn compile_synthetic(
+        &self,
+        ty: TypeRef,
+        name: &str,
+        block: Block,
+        location: dreammaker::Location,
+    ) -> Result<ProcReload, String> {
         let value = ProcValue {
-            location: ty.get().location,
+            location,
             parameters: Box::new([]),
             docs: Default::default(),
             code: Some(block),
             body_range: None,
         };
-        let file = self.file_name(ty.get().location.file);
+        let file = self.file_name(location.file);
         let source = ProcSource {
             tree: &self.tree,
             ty,
-            name: "(init)",
+            name,
             value: &value,
             file: &file,
             debug_info: false,
         };
-        let path = format!("{}/(init)", ty.get().path);
+        let path = format!("{}/{}", ty.get().path, name);
         let compiled = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             compile_proc(&source)
         })) {
@@ -886,6 +948,17 @@ fn settings(code: Option<&Block>) -> Vec<&Statement> {
 /// Compares types: what a reload can't change is refused, var defaults that
 /// changed are added to `changes`, and procs new to a type are returned as
 /// (key, type path, name, declared on the type) to be compiled.
+/// Where an expression starts, as near as the AST says.
+fn value_location(
+    expression: &dreammaker::ast::Expression,
+    otherwise: dreammaker::Location,
+) -> dreammaker::Location {
+    match expression {
+        dreammaker::ast::Expression::Base { term, .. } => term.location,
+        _ => otherwise,
+    }
+}
+
 /// A var a type's init proc sets.
 #[derive(Clone)]
 struct Init {
@@ -1194,7 +1267,7 @@ fn compare_types(
             }
             match ov.get(name) {
                 None if var.declaration.is_some() => {
-                    if new_var(n, name.as_str(), var, changes) {
+                    if new_var(new, n, name.as_str(), var, o.is_none(), changes) {
                         var_default(old, new, path, name.as_str(), true, changes);
                     }
                 }
@@ -1294,9 +1367,11 @@ fn compare_types(
 /// A var declared on type `n` that the old code didn't have. False when it
 /// can't be added.
 fn new_var(
+    snapshot: &Snapshot,
     n: TypeRef,
     name: &str,
     var: &dreammaker::objtree::TypeVar,
+    new_type: bool,
     changes: &mut Changes,
 ) -> bool {
     let shown = if n.is_root() {
@@ -1310,19 +1385,38 @@ fn new_var(
         .map(|d| d.var_type.flags)
         .unwrap_or_default();
     let static_like = flags.is_static() || flags.is_const() || n.is_root();
+    let mut init = None;
     let value = match var_constant(var) {
         Some(value) => value,
+        // The world sets it when it starts, so the reload sets it now
         None if static_like => {
-            changes.refused.push(format!(
-                "{shown}: new global or static var {name} starts as something other than a constant (a number, text, a type or a file), which a reload can't set up yet"
-            ));
-            return false;
+            let Some(expression) = &var.value.expression else {
+                return false;
+            };
+            let location = value_location(expression, var.value.location);
+            let declared = var
+                .declaration
+                .as_ref()
+                .map(|d| d.var_type.type_path.to_string())
+                .unwrap_or_default();
+            match snapshot.compile_value(n, expression, &declared, location) {
+                Ok(code) => init = Some(Box::new(code)),
+                Err(e) => {
+                    changes.refused.push(format!(
+                        "{shown}: new var {name}'s initial value doesn't compile: {e}"
+                    ));
+                    return false;
+                }
+            }
+            ConstValue::Null
         }
         // The init proc sets it on new instances
         None => {
-            changes.warnings.push(format!(
-                "{shown}: new var {name}'s default isn't a constant, so instances that exist already have it as null"
-            ));
+            if !new_type {
+                changes.warnings.push(format!(
+                    "{shown}: new var {name}'s default isn't a constant, so instances that exist already have it as null"
+                ));
+            }
             ConstValue::Null
         }
     };
@@ -1341,6 +1435,7 @@ fn new_var(
         var: name.to_owned(),
         flags: byond_flags,
         value,
+        init,
     });
     true
 }
