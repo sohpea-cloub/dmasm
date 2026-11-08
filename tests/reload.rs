@@ -158,7 +158,16 @@ fn refusal(name: &str, before: &str, after: &str) -> String {
 fn refuses_what_a_reload_cant_do() {
     let base = "/datum/thing\n\tvar/a = 1\n\tvar/list/l = list()\n/datum/thing/proc/f(x)\n\tset waitfor = FALSE\n\treturn x\n/obj/verb/v()\n\treturn\n";
     let cases = [
-        ("new-type", format!("{base}/datum/other\n"), "new type"),
+        (
+            "new-mob-type",
+            format!("{base}/mob/other\n"),
+            "new mob type",
+        ),
+        (
+            "new-type-builtin",
+            format!("{base}/obj/other\n\tpixel_x = 3\n"),
+            "sets pixel_x",
+        ),
         (
             "new-static-not-constant",
             base.replace("var/a = 1", "var/a = 1\n\tvar/static/list/b = list()"),
@@ -588,4 +597,105 @@ fn defaults_that_arent_constants_change_the_init_procs() {
     );
     assert_eq!(second.var_defaults.len(), 1, "{:?}", second.var_defaults);
     assert_eq!(second.var_defaults[0].types, ["/datum/a/c"]);
+}
+
+#[test]
+fn new_types_with_their_vars_and_procs() {
+    let before = "/obj/thing\n\tvar/a = 1\n/obj/thing/proc/f()\n\treturn 1\n/obj/named\n\tname = \"Named\"\n";
+    let after = format!(
+        "{before}/obj/thing/my_new\n\tvar/b = 2\n\tvar/list/c = list(3)\n\ta = 5\n\ticon_state = \"s\"\n\tdensity = 1\n\
+         /obj/thing/my_new/f()\n\treturn 2\n/obj/thing/my_new/proc/g()\n\treturn 3\n/obj/thing/my_new/deeper\n/obj/named/kid\n/datum/d\n"
+    );
+    let changes = changes("new-types", before, &after);
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    type Fields = Vec<(String, ConstValue)>;
+    let types: Vec<(&str, &str, Fields)> = changes
+        .new_types
+        .iter()
+        .map(|t| {
+            (t.path.as_str(), t.parent.as_str(), {
+                let mut f = t.fields.clone();
+                f.sort_by(|a, b| a.0.cmp(&b.0));
+                f
+            })
+        })
+        .collect();
+    let s = |v: &str| ConstValue::String(v.to_owned());
+    assert_eq!(
+        types,
+        [
+            (
+                "/datum/d",
+                "/datum",
+                vec![("name".to_owned(), s("d")), ("text".to_owned(), s("d"))]
+            ),
+            ("/obj/named/kid", "/obj/named", vec![]),
+            (
+                "/obj/thing/my_new",
+                "/obj/thing",
+                vec![
+                    ("density".to_owned(), ConstValue::Number(1.0)),
+                    ("icon_state".to_owned(), s("s")),
+                    ("name".to_owned(), s("my new")),
+                    ("text".to_owned(), s("m")),
+                ]
+            ),
+            (
+                "/obj/thing/my_new/deeper",
+                "/obj/thing/my_new",
+                vec![
+                    ("name".to_owned(), s("deeper")),
+                    ("text".to_owned(), s("d"))
+                ]
+            ),
+        ]
+    );
+    let mut vars: Vec<&str> = changes.new_vars.iter().map(|v| v.var.as_str()).collect();
+    vars.sort();
+    assert_eq!(vars, ["b", "c"]);
+    let mut defaults: Vec<(&str, Vec<String>)> = changes
+        .var_defaults
+        .iter()
+        .map(|d| (d.var.as_str(), d.types.clone()))
+        .collect();
+    defaults.sort();
+    assert_eq!(
+        defaults,
+        [
+            (
+                "a",
+                vec![
+                    "/obj/thing/my_new".to_owned(),
+                    "/obj/thing/my_new/deeper".to_owned()
+                ]
+            ),
+            (
+                "b",
+                vec![
+                    "/obj/thing/my_new".to_owned(),
+                    "/obj/thing/my_new/deeper".to_owned()
+                ]
+            ),
+        ]
+    );
+    let mut procs: Vec<(String, bool)> = changes
+        .new_procs
+        .iter()
+        .map(|p| (p.code.proc.path.clone(), p.declared))
+        .collect();
+    procs.sort();
+    assert_eq!(
+        procs,
+        [
+            ("/obj/thing/my_new/f".to_owned(), false),
+            ("/obj/thing/my_new/g".to_owned(), true)
+        ]
+    );
+    let mut inits: Vec<&str> = changes
+        .init_procs
+        .iter()
+        .map(|i| i.type_path.as_str())
+        .collect();
+    inits.sort();
+    assert_eq!(inits, ["/obj/thing/my_new", "/obj/thing/my_new/deeper"]);
 }

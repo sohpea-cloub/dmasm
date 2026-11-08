@@ -221,6 +221,20 @@ pub struct LineMove {
     pub lines: Vec<(u32, u32)>,
 }
 
+/// A type the running world doesn't have yet. It starts as a copy of its
+/// parent, with these fields of its record set; its vars and procs come as
+/// new vars, var defaults, new procs and an init proc.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct NewType {
+    pub path: String,
+    pub parent: String,
+    /// Built-in vars kept in the type's record, where they aren't the
+    /// parent's: `name`, `desc`, `icon`, `icon_state`, `text`, `suffix`,
+    /// `dir`, `layer`, `density` and `opacity`.
+    pub fields: Vec<(String, ConstValue)>,
+}
+
 /// A var the running world doesn't have yet.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -248,6 +262,9 @@ pub struct InitProc {
 /// What changed between two snapshots.
 #[derive(Debug, Default)]
 pub struct Changes {
+    /// New types, each after its parent. They come before everything else,
+    /// which can be on them.
+    pub new_types: Vec<NewType>,
     pub reloads: Vec<ProcReload>,
     pub new_procs: Vec<NewProc>,
     /// New vars, which come before the var defaults: those can be for
@@ -269,6 +286,7 @@ pub struct Changes {
 impl Changes {
     pub fn is_empty(&self) -> bool {
         self.reloads.is_empty()
+            && self.new_types.is_empty()
             && self.new_procs.is_empty()
             && self.new_vars.is_empty()
             && self.var_defaults.is_empty()
@@ -569,6 +587,17 @@ pub fn diff(old: &Snapshot, new: &Snapshot, changed_files: Option<&HashSet<PathB
     }
 
     let new_procs = compare_types(old, new, &mut changes);
+    // Parents first, whatever their paths
+    let depth = |path: &str| {
+        let mut depth = 0;
+        let mut at = new.find_type(path);
+        while let Some(t) = at {
+            depth += 1;
+            at = t.parent_type();
+        }
+        depth
+    };
+    changes.new_types.sort_by_cached_key(|t| depth(&t.path));
     compare_inits(old, new, &mut changes);
     for (key, type_path, name, declared) in new_procs {
         match new.compile_reload(&key) {
@@ -922,12 +951,17 @@ fn compare_inits(old: &Snapshot, new: &Snapshot, changes: &mut Changes) {
         if n.is_root() {
             continue;
         }
-        let Some(o) = old.find_type(&n.get().path) else {
-            continue;
-        };
         let new_inits = inits(n, &mut new_memo).to_vec();
-        if inits(o, &mut old_memo) == new_inits.as_slice() {
-            continue;
+        match old.find_type(&n.get().path) {
+            Some(o) if inits(o, &mut old_memo) == new_inits.as_slice() => continue,
+            Some(_) => {}
+            // A new type starts with its parent's init proc
+            None => {
+                let parent = n.parent_type().map(|p| inits(p, &mut new_memo).to_vec());
+                if new_inits.is_empty() && parent.is_none_or(|p| p.is_empty()) {
+                    continue;
+                }
+            }
         }
         let code = if new_inits.is_empty() {
             None
@@ -988,6 +1022,121 @@ fn appended(
     same_files && (same_code || !added_beside_old)
 }
 
+/// Whether a type's var is one of BYOND's own.
+fn is_builtin(t: TypeRef, name: &str) -> bool {
+    t.get_var_declaration(name)
+        .is_some_and(|d| d.get().location.file == FileId::BUILTINS)
+}
+
+/// Whether the type or one of its ancestors sets a built-in var in code.
+fn sets_builtin(t: TypeRef, name: &str) -> bool {
+    let mut at = Some(t);
+    while let Some(t) = at {
+        if t.get()
+            .vars
+            .get(name)
+            .is_some_and(|v| v.value.location.file != FileId::BUILTINS)
+        {
+            return true;
+        }
+        at = t.parent_type();
+    }
+    false
+}
+
+/// Reports a type the running world doesn't have, with the fields of its
+/// record that aren't its parent's, as DreamMaker works them out.
+fn new_type(n: TypeRef, changes: &mut Changes) {
+    const FIELDS: &[&str] = &[
+        "name",
+        "desc",
+        "icon",
+        "icon_state",
+        "text",
+        "suffix",
+        "dir",
+        "layer",
+        "density",
+        "opacity",
+    ];
+    let path = n.get().path.clone();
+    let Some(parent) = n.parent_type() else {
+        changes
+            .refused
+            .push(format!("{path}: new type with no parent"));
+        return;
+    };
+    let mut at = Some(n);
+    while let Some(t) = at {
+        if t.get().path == "/mob" {
+            changes.refused.push(format!(
+                "{path}: new mob type (mob types can't be added yet)"
+            ));
+            return;
+        }
+        at = t.parent_type();
+    }
+
+    let mut fields = vec![];
+    let mut refused = false;
+    for (name, var) in n.get().vars.iter() {
+        let name = name.as_str();
+        if !is_builtin(n, name) || var.value.location.file == FileId::BUILTINS {
+            continue;
+        }
+        if name == "parent_type" {
+            continue;
+        }
+        if !FIELDS.contains(&name) {
+            changes.refused.push(format!(
+                "{path}: sets {name}, a built-in var a new type can't set yet"
+            ));
+            refused = true;
+            continue;
+        }
+        match var_constant(var) {
+            Some(value) => fields.push((name.to_owned(), value)),
+            None => {
+                changes.refused.push(format!(
+                    "{path}: sets {name} to something other than a constant"
+                ));
+                refused = true;
+            }
+        }
+    }
+    if refused {
+        return;
+    }
+
+    // Without a name of its own or an ancestor's, a type is named for its
+    // path, and its text is the first letter of its name
+    let mut name = fields
+        .iter()
+        .find(|(field, _)| field == "name")
+        .map(|(_, value)| value.clone());
+    if name.is_none() && !sets_builtin(n, "name") {
+        let last = path
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .replace('_', " ");
+        name = Some(ConstValue::String(last.clone()));
+        fields.push(("name".to_owned(), ConstValue::String(last)));
+    }
+    if !sets_builtin(n, "text") {
+        if let Some(ConstValue::String(name)) = name {
+            let first: String = name.chars().take(1).collect();
+            fields.push(("text".to_owned(), ConstValue::String(first)));
+        }
+    }
+
+    changes.new_types.push(NewType {
+        path,
+        parent: parent.get().path.clone(),
+        fields,
+    });
+}
+
 fn compare_types(
     old: &Snapshot,
     new: &Snapshot,
@@ -1003,9 +1152,9 @@ fn compare_types(
     let old_types = by_path(old);
     let new_types = by_path(new);
     for path in new_types.keys().filter(|p| !old_types.contains_key(*p)) {
-        changes
-            .refused
-            .push(format!("{path}: new type (types can't be added yet)"));
+        if let Some(n) = new.find_type(path) {
+            new_type(n, changes);
+        }
     }
     for path in old_types.keys().filter(|p| !new_types.contains_key(*p)) {
         changes.warnings.push(format!(
@@ -1013,10 +1162,14 @@ fn compare_types(
         ));
     }
 
-    for path in new_types.keys().filter(|p| old_types.contains_key(*p)) {
-        let (Some(o), Some(n)) = (old.find_type(path), new.find_type(path)) else {
+    // A new type is compared with an empty one
+    let no_vars = Default::default();
+    let no_procs = Default::default();
+    for path in new_types.keys() {
+        let Some(n) = new.find_type(path) else {
             continue;
         };
+        let o = old.find_type(path);
         let shown = if path.is_empty() {
             "(global)"
         } else {
@@ -1024,16 +1177,21 @@ fn compare_types(
         };
 
         let parent = |t: TypeRef| t.parent_type().map(|p| p.get().path.clone());
-        if parent(o) != parent(n) {
+        if o.is_some_and(|o| parent(o) != parent(n)) {
             changes
                 .refused
                 .push(format!("{shown}: its parent type changed"));
         }
 
-        let (ov, nv) = (&o.get().vars, &n.get().vars);
+        let ov = o.map_or(&no_vars, |o| &o.get().vars);
+        let nv = &n.get().vars;
         let declaration =
             |v: &dreammaker::objtree::TypeVar| v.declaration.as_ref().map(|d| d.var_type.clone());
         for (name, var) in nv.iter() {
+            // A new type's built-in vars are fields of its record
+            if o.is_none() && is_builtin(n, name.as_str()) {
+                continue;
+            }
             match ov.get(name) {
                 None if var.declaration.is_some() => {
                     if new_var(n, name.as_str(), var, changes) {
@@ -1064,7 +1222,8 @@ fn compare_types(
             }
         }
 
-        let (op, np) = (&o.get().procs, &n.get().procs);
+        let op = o.map_or(&no_procs, |o| &o.get().procs);
+        let np = &n.get().procs;
         for (name, proc) in np.iter() {
             let old_values = op.get(name).map(real).unwrap_or_default();
             let new_values = real(proc);
@@ -1123,7 +1282,7 @@ fn compare_types(
             if !real(&op[name]).is_empty() {
                 changes.warnings.push(format!(
                     "{}: the proc was removed, and stays in the running world",
-                    proc_path(o, name.as_str())
+                    proc_path(n, name.as_str())
                 ));
             }
         }
