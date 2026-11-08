@@ -13,6 +13,9 @@ pub trait Operand: Sized {
         -> Result<Self, DisassembleError>;
 
     fn serialize(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
+
+    /// Adds this operand to `out` if it's a variable.
+    fn variables<'a>(&'a self, _out: &mut Vec<&'a Variable>) {}
 }
 
 // keeping the nom bullshit separate makes everything else easier to dig thru
@@ -821,7 +824,28 @@ pub enum Variable {
     //RuntimeProcField(Box<Variable>, Vec<DMString>, DMString),
 }
 
+impl Variable {
+    /// The global vars this reads or writes, including any inside it (the
+    /// base of a cached chain, an `initial()`).
+    pub fn globals(&self) -> Vec<&GlobalVar> {
+        match self {
+            Self::Global(global) => vec![global],
+            Self::SetCache(a, b) => {
+                let mut globals = a.globals();
+                globals.extend(b.globals());
+                globals
+            }
+            Self::Initial(v) | Self::IsSaved(v) | Self::PtrRef(v) | Self::PtrDeref(v) => v.globals(),
+            _ => vec![],
+        }
+    }
+}
+
 impl Operand for Variable {
+    fn variables<'a>(&'a self, out: &mut Vec<&'a Variable>) {
+        out.push(self);
+    }
+
     fn assemble<'a, E: AssembleEnv>(
         &'a self,
         asm: &mut Assembler<'a, E>,
