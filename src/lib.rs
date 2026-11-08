@@ -3,6 +3,7 @@ pub mod assembler;
 mod bytecode;
 pub mod compiler;
 pub mod disassembler;
+pub mod reload;
 mod instructions;
 mod list_operands;
 mod operands;
