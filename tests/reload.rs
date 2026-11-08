@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use dmasm::reload::{diff, Changes, ParseOptions, ProcKey, Snapshot};
+use dmasm::reload::{diff, Changes, ConstValue, ParseOptions, ProcKey, ProcSettings, Snapshot};
 use dmasm::{Instruction, Node};
 
 /// A codebase in a temporary directory: `world.dme` including `code.dm`.
@@ -154,19 +154,8 @@ fn refusal(name: &str, before: &str, after: &str) -> String {
 
 #[test]
 fn refuses_what_a_reload_cant_do() {
-    let base =
-        "/datum/thing\n\tvar/a = 1\n/datum/thing/proc/f(x)\n\tset waitfor = FALSE\n\treturn x\n";
+    let base = "/datum/thing\n\tvar/a = 1\n\tvar/list/l = list()\n/datum/thing/proc/f(x)\n\tset waitfor = FALSE\n\treturn x\n/obj/verb/v()\n\treturn\n";
     let cases = [
-        (
-            "new-proc",
-            format!("{base}/proc/g()\n\treturn\n"),
-            "new proc",
-        ),
-        (
-            "removed-proc",
-            "/datum/thing\n\tvar/a = 1\n".to_owned(),
-            "proc removed",
-        ),
         ("new-type", format!("{base}/datum/other\n"), "new type"),
         (
             "new-var",
@@ -174,24 +163,37 @@ fn refuses_what_a_reload_cant_do() {
             "new var b",
         ),
         (
-            "var-value",
-            base.replace("var/a = 1", "var/a = 2"),
-            "var a's value changed",
-        ),
-        (
             "var-decl",
             base.replace("var/a = 1", "var/static/a = 1"),
             "var a's declaration changed",
         ),
         (
-            "param",
-            base.replace("f(x)", "f(y)").replace("return x", "return y"),
-            "parameters changed",
+            "var-not-constant",
+            base.replace("var/list/l = list()", "var/list/l = list(1)"),
+            "isn't a constant",
+        ),
+        (
+            "in-list",
+            base.replace("f(x)", "f(x as anything in world)"),
+            "`in` list",
         ),
         (
             "setting",
-            base.replace("waitfor = FALSE", "waitfor = TRUE"),
+            base.replace(
+                "/obj/verb/v()\n\treturn",
+                "/obj/verb/v()\n\tset name = \"V\"\n\treturn",
+            ),
             "`set` statements changed",
+        ),
+        (
+            "new-verb",
+            format!("{base}/obj/verb/w()\n\treturn\n"),
+            "new verb",
+        ),
+        (
+            "second-definition",
+            format!("{base}/datum/thing/f(x)\n\treturn ..()\n"),
+            "another definition",
         ),
         (
             "parse-error",
@@ -209,4 +211,156 @@ fn refuses_what_a_reload_cant_do() {
             refused
         );
     }
+}
+
+#[test]
+fn a_new_default_for_a_builtin_var_is_refused() {
+    let before = "/obj/thing\n\tname = \"a\"\n";
+    let refused = refusal("builtin", before, &before.replace("\"a\"", "\"b\""));
+    assert!(refused.contains("BYOND's own vars"), "{}", refused);
+}
+
+#[test]
+fn new_procs_are_compiled() {
+    let before = "/datum/thing/proc/f()\n\treturn 1\n/datum/thing/sub\n";
+    let after = "/datum/thing/proc/f()\n\treturn 1\n/datum/thing/sub\n/proc/g()\n\treturn 2\n/datum/thing/proc/h(a, obj/b, c as num)\n\treturn a\n/datum/thing/sub/f()\n\treturn ..() + 1\n";
+    let changes = changes("new-procs", before, after);
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    let mut new: Vec<(String, String, bool, String)> = changes
+        .new_procs
+        .iter()
+        .map(|p| {
+            (
+                p.type_path.clone(),
+                p.name.clone(),
+                p.declared,
+                p.code.proc.path.clone(),
+            )
+        })
+        .collect();
+    new.sort();
+    assert_eq!(
+        new,
+        [
+            ("".to_owned(), "g".to_owned(), true, "/g".to_owned()),
+            (
+                "/datum/thing".to_owned(),
+                "h".to_owned(),
+                true,
+                "/datum/thing/h".to_owned()
+            ),
+            (
+                "/datum/thing/sub".to_owned(),
+                "f".to_owned(),
+                false,
+                "/datum/thing/sub/f".to_owned()
+            ),
+        ]
+    );
+    let h = changes.new_procs.iter().find(|p| p.name == "h").unwrap();
+    let params: Vec<(String, u32)> = h
+        .code
+        .params
+        .iter()
+        .map(|p| (p.name.clone(), p.input))
+        .collect();
+    assert_eq!(
+        params,
+        [
+            ("a".to_owned(), 0),
+            ("b".to_owned(), 2),
+            ("c".to_owned(), 8)
+        ]
+    );
+}
+
+#[test]
+fn removed_procs_and_vars_stay() {
+    let before =
+        "/datum/thing\n\tvar/a = 1\n/datum/thing/proc/f()\n\treturn 1\n/proc/g()\n\treturn f()\n";
+    let after = "/datum/thing\n/proc/g()\n\treturn 2\n";
+    let changes = changes("removed", before, after);
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    let warnings = changes.warnings.join("\n");
+    assert!(warnings.contains("var a was removed"), "{}", warnings);
+    assert!(
+        warnings.contains("/datum/thing/f: the proc was removed"),
+        "{}",
+        warnings
+    );
+    assert_eq!(reloaded(&changes), [key("/g", 0)]);
+}
+
+#[test]
+fn var_defaults_go_to_the_subtypes_that_inherit_them() {
+    let before =
+        "/datum/a\n\tvar/x = 1\n\tvar/y = \"one\"\n/datum/a/b\n/datum/a/c\n\tx = 5\n/datum/a/c/d\n";
+    let after = before
+        .replace("var/x = 1", "var/x = 2")
+        .replace("var/y = \"one\"", "var/y = /datum/a/b");
+    let changes = changes("defaults", before, &after);
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    let mut defaults: Vec<(String, ConstValue, Vec<String>)> = changes
+        .var_defaults
+        .iter()
+        .map(|d| (d.var.clone(), d.value.clone(), d.types.clone()))
+        .collect();
+    defaults.sort_by(|a, b| a.0.cmp(&b.0));
+    for d in &mut defaults {
+        d.2.sort();
+    }
+    assert_eq!(
+        defaults,
+        [
+            (
+                "x".to_owned(),
+                ConstValue::Number(2.0),
+                vec!["/datum/a".to_owned(), "/datum/a/b".to_owned()]
+            ),
+            (
+                "y".to_owned(),
+                ConstValue::Path("/datum/a/b".to_owned()),
+                vec![
+                    "/datum/a".to_owned(),
+                    "/datum/a/b".to_owned(),
+                    "/datum/a/c".to_owned(),
+                    "/datum/a/c/d".to_owned()
+                ]
+            ),
+        ]
+    );
+}
+
+#[test]
+fn global_var_values_are_left_with_a_warning() {
+    let changes = changes("globals", "var/g = 1\n", "var/g = 2\n");
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    assert!(changes.var_defaults.is_empty());
+    assert!(
+        changes.warnings.join("").contains("after a restart"),
+        "{:?}",
+        changes.warnings
+    );
+}
+
+#[test]
+fn parameters_and_waitfor_can_change() {
+    let before = "/proc/f(a)\n\treturn a\n";
+    let after = "/proc/f(a, mob/b)\n\tset waitfor = 0\n\tset background = 1\n\treturn a\n";
+    let changes = changes("signature", before, after);
+    assert_eq!(reloaded(&changes), [key("/f", 0)]);
+    let reload = &changes.reloads[0];
+    let params: Vec<(String, u32)> = reload
+        .params
+        .iter()
+        .map(|p| (p.name.clone(), p.input))
+        .collect();
+    assert_eq!(params, [("a".to_owned(), 0), ("b".to_owned(), 1)]);
+    assert_eq!(
+        reload.settings,
+        ProcSettings {
+            waitfor: false,
+            background: true
+        }
+    );
 }

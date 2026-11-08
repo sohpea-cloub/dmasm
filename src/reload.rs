@@ -59,9 +59,74 @@ pub struct ProcReload {
     pub nodes: Vec<Node>,
     /// Local variable names, by slot.
     pub locals: Vec<String>,
-    /// Parameter names. These are the same as the running proc's: a change to
-    /// them is refused.
-    pub params: Vec<String>,
+    pub params: Vec<Param>,
+    pub settings: ProcSettings,
+}
+
+/// A parameter as BYOND keeps it for a proc.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Param {
+    pub name: String,
+    /// What `as` (or the declared type) allows, as BYOND's input type bits:
+    /// mob 1, obj 2, text 4, num 8 and so on.
+    pub input: u32,
+    /// `as command_text` is 1, `as color` 2.
+    pub input_extra: u32,
+}
+
+/// The `set` statements BYOND keeps in a proc's flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ProcSettings {
+    pub waitfor: bool,
+    pub background: bool,
+}
+
+impl Default for ProcSettings {
+    fn default() -> Self {
+        ProcSettings {
+            waitfor: true,
+            background: false,
+        }
+    }
+}
+
+/// A proc the running world doesn't have yet.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct NewProc {
+    /// The type it's on, `""` for a global proc.
+    pub type_path: String,
+    pub name: String,
+    /// Declared on this type (`proc/name`), rather than overriding a proc of
+    /// a parent type.
+    pub declared: bool,
+    pub code: ProcReload,
+}
+
+/// A constant value, as a var default can have.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ConstValue {
+    Null,
+    Number(f32),
+    String(String),
+    /// A type path
+    Path(String),
+    /// A file in the resource cache (`'icon.dmi'`)
+    Resource(String),
+}
+
+/// A var whose default changed.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct VarDefault {
+    pub var: String,
+    pub value: ConstValue,
+    /// The type whose default changed, and every subtype that gets its
+    /// default from there.
+    pub types: Vec<String>,
 }
 
 /// A proc whose code is unchanged but has moved to other lines.
@@ -78,7 +143,12 @@ pub struct LineMove {
 #[derive(Debug, Default)]
 pub struct Changes {
     pub reloads: Vec<ProcReload>,
+    pub new_procs: Vec<NewProc>,
+    pub var_defaults: Vec<VarDefault>,
     pub line_moves: Vec<LineMove>,
+    /// What a reload leaves as it was (removed procs stay in the world, for
+    /// one), one line each.
+    pub warnings: Vec<String>,
     /// Why the changes can't be applied, one line each. When there's any, none
     /// of the changes should be.
     pub refused: Vec<String>,
@@ -86,7 +156,11 @@ pub struct Changes {
 
 impl Changes {
     pub fn is_empty(&self) -> bool {
-        self.reloads.is_empty() && self.line_moves.is_empty() && self.refused.is_empty()
+        self.reloads.is_empty()
+            && self.new_procs.is_empty()
+            && self.var_defaults.is_empty()
+            && self.line_moves.is_empty()
+            && self.refused.is_empty()
     }
 }
 
@@ -206,6 +280,19 @@ impl Snapshot {
         Some(self.file_name(value.location.file))
     }
 
+    /// Compiles one proc for a reload: its code, parameters and settings.
+    pub fn compile_reload(&self, key: &ProcKey) -> Result<ProcReload, String> {
+        let (_, value) = self.find(key).ok_or_else(|| format!("no proc {key}"))?;
+        let compiled = self.compile(key)?;
+        Ok(ProcReload {
+            proc: key.clone(),
+            nodes: compiled.nodes,
+            locals: compiled.locals,
+            params: params(value),
+            settings: proc_settings(value)?,
+        })
+    }
+
     /// Compiles one proc, with `DbgFile` and `DbgLine`.
     pub fn compile(&self, key: &ProcKey) -> Result<CompiledProc, String> {
         let (ty, value) = self.find(key).ok_or_else(|| format!("no proc {key}"))?;
@@ -291,7 +378,18 @@ pub fn diff(old: &Snapshot, new: &Snapshot, changed_files: Option<&HashSet<PathB
         return changes;
     }
 
-    compare_types(old, new, &mut changes.refused);
+    let new_procs = compare_types(old, new, &mut changes);
+    for (key, type_path, name, declared) in new_procs {
+        match new.compile_reload(&key) {
+            Ok(code) => changes.new_procs.push(NewProc {
+                type_path,
+                name,
+                declared,
+                code,
+            }),
+            Err(e) => changes.refused.push(format!("{key}: doesn't compile: {e}")),
+        }
+    }
 
     let in_changed_file = |key: &ProcKey| match changed_files {
         None => true,
@@ -320,17 +418,14 @@ pub fn diff(old: &Snapshot, new: &Snapshot, changed_files: Option<&HashSet<PathB
                 .map(|p| p.default.clone())
                 .collect::<Vec<_>>()
         };
+        let params_changed = signature(old_value) != signature(new_value);
         if old_value.code != new_value.code
             || defaults(old_value) != defaults(new_value)
+            || params_changed
             || moved_file
         {
-            match new.compile(key) {
-                Ok(compiled) => changes.reloads.push(ProcReload {
-                    proc: key.clone(),
-                    nodes: compiled.nodes,
-                    locals: compiled.locals,
-                    params: compiled.params,
-                }),
+            match new.compile_reload(key) {
+                Ok(reload) => changes.reloads.push(reload),
                 Err(e) => changes.refused.push(format!("{key}: doesn't compile: {e}")),
             }
             continue;
@@ -397,32 +492,118 @@ fn dbg_lines(nodes: &[Node]) -> Vec<u32> {
         .collect()
 }
 
-/// What changed about a proc that a reload can't change: its parameters (the
-/// names and types BYOND keeps for the proc, not their default values, which
-/// are code) and its `set` statements.
+/// What changed about a proc that a reload can't change: an `in` list on a
+/// parameter (BYOND keeps it somewhere not mapped yet), and `set` statements
+/// other than `waitfor` and `background`.
 fn signature_change(old: &ProcValue, new: &ProcValue) -> Option<String> {
-    let params = |v: &ProcValue| {
-        v.parameters
+    if signature(old) != signature(new)
+        && new
+            .parameters
             .iter()
-            .map(|p| {
-                (
-                    p.name.clone(),
-                    p.var_type.clone(),
-                    p.in_list.clone(),
-                    p.absolute,
-                )
-            })
-            .collect::<Vec<_>>()
-    };
-    if params(old) != params(new) {
+            .chain(old.parameters.iter())
+            .any(|p| p.in_list.is_some())
+    {
         return Some(
-            "its parameters changed (only their default values can change in a reload)".to_owned(),
+            "its parameters changed, and one has an `in` list, which a reload can't change yet"
+                .to_owned(),
         );
     }
-    if settings(old.code.as_ref()) != settings(new.code.as_ref()) {
-        return Some("its `set` statements changed".to_owned());
+    fn other_settings(v: &ProcValue) -> Vec<&Statement> {
+        settings(v.code.as_ref())
+            .into_iter()
+            .filter(|s| !matches!(s, Statement::Setting { name, .. } if name.as_str() == "waitfor" || name.as_str() == "background"))
+            .collect()
+    }
+    if other_settings(old) != other_settings(new) {
+        return Some(
+            "its `set` statements changed (only `waitfor` and `background` can change in a reload)"
+                .to_owned(),
+        );
     }
     None
+}
+
+/// A proc's parameters as BYOND keeps them: names and input types, not
+/// default values (which are code).
+fn signature(
+    v: &ProcValue,
+) -> Vec<(
+    dreammaker::ast::Ident,
+    dreammaker::ast::VarType,
+    Option<dreammaker::ast::Expression>,
+    bool,
+)> {
+    v.parameters
+        .iter()
+        .map(|p| {
+            (
+                p.name.clone(),
+                p.var_type.clone(),
+                p.in_list.clone(),
+                p.absolute,
+            )
+        })
+        .collect()
+}
+
+/// A proc's parameters as BYOND has them. Like DreamMaker, `...` and
+/// parameters written as a path from the root aren't parameters at all.
+fn params(v: &ProcValue) -> Vec<Param> {
+    use dreammaker::ast::InputType;
+    v.parameters
+        .iter()
+        .filter(|p| !p.absolute && p.name.as_str() != "...")
+        .map(|p| {
+            let mut input = p.var_type.input_type;
+            if input.is_empty() {
+                // `obj/thing` alone allows what its root type is
+                let path: Vec<&str> = p.var_type.type_path.iter().map(|s| s.as_str()).collect();
+                input = match path.as_slice() {
+                    ["atom"] => InputType::ATOM,
+                    ["atom", "movable", ..] => InputType::MOVABLE,
+                    ["obj", ..] => InputType::OBJ,
+                    ["mob", ..] => InputType::MOB,
+                    ["turf", ..] => InputType::TURF,
+                    ["area", ..] => InputType::AREA,
+                    _ => InputType::empty(),
+                };
+            }
+            Param {
+                name: p.name.as_str().to_owned(),
+                input: input.bits() & 0xFFFF,
+                input_extra: (input.bits() >> 16) & 0x3,
+            }
+        })
+        .collect()
+}
+
+/// A proc's `set waitfor` and `set background`, which have to be numbers.
+fn proc_settings(v: &ProcValue) -> Result<ProcSettings, String> {
+    use dreammaker::ast::{Expression, Term};
+    let mut out = ProcSettings::default();
+    for setting in settings(v.code.as_ref()) {
+        let Statement::Setting { name, value, .. } = setting else {
+            continue;
+        };
+        let name = name.as_str();
+        if name != "waitfor" && name != "background" {
+            continue;
+        }
+        let on = match value {
+            Expression::Base { term, follow } if follow.is_empty() => match &term.elem {
+                Term::Int(n) => *n != 0,
+                Term::Float(f) => *f != 0.0,
+                _ => return Err(format!("can't tell what `set {name}` is set to")),
+            },
+            _ => return Err(format!("can't tell what `set {name}` is set to")),
+        };
+        if name == "waitfor" {
+            out.waitfor = on;
+        } else {
+            out.background = on;
+        }
+    }
+    Ok(out)
 }
 
 /// Every `set` statement in a proc, in order.
@@ -475,10 +656,15 @@ fn settings(code: Option<&Block>) -> Vec<&Statement> {
     out
 }
 
-/// Refuses everything about types that a reload can't change: types, vars and
-/// procs coming and going, var declarations and default values, and proc
-/// declarations.
-fn compare_types(old: &Snapshot, new: &Snapshot, refused: &mut Vec<String>) {
+/// Compares types: what a reload can't change is refused, var defaults that
+/// changed are added to `changes`, and procs new to a type are returned as
+/// (key, type path, name, declared on the type) to be compiled.
+fn compare_types(
+    old: &Snapshot,
+    new: &Snapshot,
+    changes: &mut Changes,
+) -> Vec<(ProcKey, String, String, bool)> {
+    let mut new_procs = vec![];
     let by_path = |s: &'_ Snapshot| -> BTreeMap<String, ()> {
         s.tree
             .iter_types()
@@ -488,10 +674,14 @@ fn compare_types(old: &Snapshot, new: &Snapshot, refused: &mut Vec<String>) {
     let old_types = by_path(old);
     let new_types = by_path(new);
     for path in new_types.keys().filter(|p| !old_types.contains_key(*p)) {
-        refused.push(format!("{path}: new type (types can't be added yet)"));
+        changes
+            .refused
+            .push(format!("{path}: new type (types can't be added yet)"));
     }
     for path in old_types.keys().filter(|p| !new_types.contains_key(*p)) {
-        refused.push(format!("{path}: type removed (types can't be removed yet)"));
+        changes.warnings.push(format!(
+            "{path}: the type was removed, and stays in the running world"
+        ));
     }
 
     for path in new_types.keys().filter(|p| old_types.contains_key(*p)) {
@@ -506,28 +696,34 @@ fn compare_types(old: &Snapshot, new: &Snapshot, refused: &mut Vec<String>) {
 
         let parent = |t: TypeRef| t.parent_type().map(|p| p.get().path.clone());
         if parent(o) != parent(n) {
-            refused.push(format!("{shown}: its parent type changed"));
+            changes
+                .refused
+                .push(format!("{shown}: its parent type changed"));
         }
 
         let (ov, nv) = (&o.get().vars, &n.get().vars);
         for (name, var) in nv.iter() {
             let Some(old_var) = ov.get(name) else {
-                refused.push(format!("{shown}: new var {name} (vars can't be added yet)"));
+                changes
+                    .refused
+                    .push(format!("{shown}: new var {name} (vars can't be added yet)"));
                 continue;
             };
             let declaration = |v: &dreammaker::objtree::TypeVar| {
                 v.declaration.as_ref().map(|d| d.var_type.clone())
             };
             if declaration(old_var) != declaration(var) {
-                refused.push(format!("{shown}: var {name}'s declaration changed"));
+                changes
+                    .refused
+                    .push(format!("{shown}: var {name}'s declaration changed"));
             } else if old_var.value.expression != var.value.expression {
-                refused.push(format!(
-                    "{shown}: var {name}'s value changed (only proc code can change in a reload)"
-                ));
+                var_default(new, o, n, name.as_str(), changes);
             }
         }
         for name in ov.keys().filter(|name| !nv.contains_key(*name)) {
-            refused.push(format!("{shown}: var {name} removed"));
+            changes.warnings.push(format!(
+                "{shown}: var {name} was removed, and stays in the running world"
+            ));
         }
 
         let (op, np) = (&o.get().procs, &n.get().procs);
@@ -540,35 +736,148 @@ fn compare_types(old: &Snapshot, new: &Snapshot, refused: &mut Vec<String>) {
         for (name, proc) in np.iter() {
             let old_count = op.get(name).map_or(0, real);
             let new_count = real(proc);
+            let path = proc_path(n, name.as_str());
             if new_count > old_count {
-                refused.push(format!(
-                    "{}: new proc (procs can't be added yet)",
-                    proc_path(n, name.as_str())
-                ));
+                let verb = n
+                    .get_proc_declaration(name.as_str())
+                    .is_some_and(|d| d.kind == dreammaker::ast::ProcDeclKind::Verb);
+                if verb {
+                    changes
+                        .refused
+                        .push(format!("{path}: new verb (verbs can't be added yet)"));
+                } else if old_count > 0 || new_count > 1 {
+                    changes.refused.push(format!(
+                        "{path}: another definition of a proc the type already defines (only a type's first definition of a proc can be added yet)"
+                    ));
+                } else {
+                    let key = ProcKey {
+                        path: path.clone(),
+                        override_id: 0,
+                    };
+                    new_procs.push((
+                        key,
+                        n.get().path.clone(),
+                        name.as_str().to_owned(),
+                        proc.declaration.is_some(),
+                    ));
+                }
+                continue;
             } else if new_count < old_count {
-                refused.push(format!(
-                    "{}: proc removed (procs can't be removed yet)",
-                    proc_path(n, name.as_str())
+                changes.warnings.push(format!(
+                    "{path}: a definition was removed, and stays in the running world"
                 ));
+                continue;
             }
             let declaration = |p: Option<&dreammaker::objtree::TypeProc>| {
                 p.and_then(|p| p.declaration.as_ref())
                     .map(|d| (d.kind, d.flags))
             };
             if declaration(op.get(name)) != declaration(Some(proc)) {
-                refused.push(format!(
-                    "{}: its declaration changed (proc or verb)",
-                    proc_path(n, name.as_str())
-                ));
+                changes
+                    .refused
+                    .push(format!("{path}: its declaration changed (proc or verb)"));
             }
         }
         for name in op.keys().filter(|name| !np.contains_key(*name)) {
             if real(&op[name]) > 0 {
-                refused.push(format!(
-                    "{}: proc removed (procs can't be removed yet)",
+                changes.warnings.push(format!(
+                    "{}: the proc was removed, and stays in the running world",
                     proc_path(o, name.as_str())
                 ));
             }
         }
     }
+
+    new_procs
+}
+
+/// A var whose value changed on type `n`: a new default for it and the
+/// subtypes that inherit it, if a reload can do that.
+fn var_default(new: &Snapshot, o: TypeRef, n: TypeRef, name: &str, changes: &mut Changes) {
+    let shown = if n.is_root() {
+        "(global)".to_owned()
+    } else {
+        n.get().path.clone()
+    };
+    let Some(declaration) = n.get_var_declaration(name) else {
+        changes.refused.push(format!(
+            "{shown}: var {name} has a value but no declaration"
+        ));
+        return;
+    };
+    let flags = declaration.get().var_type.flags;
+    if declaration.get().location.file == FileId::BUILTINS {
+        changes.refused.push(format!(
+            "{shown}: {name} is one of BYOND's own vars, and a new default for it needs a rebuild"
+        ));
+        return;
+    }
+    if flags.is_const() {
+        changes.refused.push(format!(
+            "{shown}: {name} is a const, which is compiled into the code that uses it"
+        ));
+        return;
+    }
+    if n.is_root() || flags.is_static() {
+        changes.warnings.push(format!(
+            "{shown}: {name} is a global var, so its new initial value only applies after a restart"
+        ));
+        return;
+    }
+
+    let constant = |t: TypeRef| -> Option<ConstValue> {
+        let var = t.get().vars.get(name)?;
+        if var.value.expression.is_none() {
+            return Some(ConstValue::Null);
+        }
+        const_value(var.value.constant.as_ref()?)
+    };
+    let (Some(_), Some(value)) = (constant(o), constant(n)) else {
+        changes.refused.push(format!(
+            "{shown}: var {name}'s default isn't a constant (a number, text, a type or a file), so it's set by the type's init proc, which a reload can't change yet"
+        ));
+        return;
+    };
+
+    // The type and its subtypes that don't set the var themselves
+    let mut types = vec![];
+    for ty in new.tree.iter_types() {
+        let mut at = ty;
+        loop {
+            if at.index() == n.index() {
+                types.push(ty.get().path.clone());
+                break;
+            }
+            if at.get().vars.contains_key(name) {
+                break;
+            }
+            match at.parent_type() {
+                Some(parent) => at = parent,
+                None => break,
+            }
+        }
+    }
+    changes.var_defaults.push(VarDefault {
+        var: name.to_owned(),
+        value,
+        types,
+    });
+}
+
+fn const_value(constant: &dreammaker::constants::Constant) -> Option<ConstValue> {
+    use dreammaker::constants::Constant;
+    Some(match constant {
+        Constant::Null(_) => ConstValue::Null,
+        Constant::Float(f) => ConstValue::Number(*f),
+        Constant::String(s) => ConstValue::String(s.to_string()),
+        Constant::Resource(s) => ConstValue::Resource(s.to_string()),
+        Constant::Prefab(pop) if pop.vars.is_empty() => {
+            let path: Vec<&str> = pop.path.iter().map(|s| s.as_str()).collect();
+            if path.contains(&"proc") || path.contains(&"verb") {
+                return None;
+            }
+            ConstValue::Path(format!("/{}", path.join("/")))
+        }
+        _ => return None,
+    })
 }
