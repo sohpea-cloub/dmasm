@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use dmasm::reload::{
-    diff, Changes, ConstValue, NewVar, ParseOptions, ProcKey, ProcSettings, Snapshot,
+    diff, Changes, ConstValue, InList, NewVar, ParseOptions, ProcKey, ProcSettings, Snapshot,
 };
 use dmasm::{Instruction, Node};
 
@@ -176,8 +176,8 @@ fn refuses_what_a_reload_cant_do() {
         ),
         (
             "in-list",
-            base.replace("f(x)", "f(x as anything in world)"),
-            "`in` list",
+            base.replace("f(x)", "f(x in list(1, 2))"),
+            "`in` list expression",
         ),
         (
             "setting",
@@ -193,9 +193,9 @@ fn refuses_what_a_reload_cant_do() {
             "new verb",
         ),
         (
-            "second-definition",
-            format!("{base}/datum/thing/f(x)\n\treturn ..()\n"),
-            "another definition",
+            "definition-before",
+            format!("/datum/thing/f(x)\n\treturn 2\n{base}"),
+            "might come before",
         ),
         (
             "parse-error",
@@ -435,4 +435,124 @@ fn removing_an_override_goes_back_to_the_inherited_default() {
     assert_eq!(changes.var_defaults.len(), 1);
     assert_eq!(changes.var_defaults[0].value, ConstValue::Number(1.0));
     assert_eq!(changes.var_defaults[0].types, ["/datum/a/b"]);
+}
+
+#[test]
+fn static_locals_come_with_their_initial_values() {
+    let before = "/datum/a/proc/f()\n\treturn 1\n";
+    let after = "/datum/a/proc/f()\n\tvar/static/n = 3\n\tvar/static/list/l = list()\n\tif (n)\n\t\tvar/static/n = \"x\"\n\t\treturn n\n\treturn l\n";
+    let changes = changes("statics", before, after);
+    let statics: Vec<(String, String, Option<ConstValue>)> = changes.reloads[0]
+        .statics
+        .iter()
+        .map(|s| (s.name.clone(), s.scope.clone(), s.value.clone()))
+        .collect();
+    assert_eq!(
+        statics,
+        [
+            (
+                "n".to_owned(),
+                "proc:/datum/a/proc/f#0".to_owned(),
+                Some(ConstValue::Number(3.0))
+            ),
+            ("l".to_owned(), "proc:/datum/a/proc/f#0".to_owned(), None),
+            (
+                "n".to_owned(),
+                "proc:/datum/a/proc/f#1".to_owned(),
+                Some(ConstValue::String("x".to_owned()))
+            ),
+        ]
+    );
+}
+
+#[test]
+fn another_definition_after_the_others_is_a_new_proc() {
+    let before = "/datum/a/proc/f()\n\treturn 1\n";
+    let after = "/datum/a/proc/f()\n\treturn 1\n/datum/a/f()\n\treturn ..() + 1\n/datum/a/f()\n\treturn ..() * 10\n";
+    let changes = changes("second-definition", before, after);
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    let added: Vec<(ProcKey, bool)> = changes
+        .new_procs
+        .iter()
+        .map(|p| (p.code.proc.clone(), p.declared))
+        .collect();
+    assert_eq!(
+        added,
+        [(key("/datum/a/f", 1), false), (key("/datum/a/f", 2), false)]
+    );
+}
+
+#[test]
+fn another_definition_of_a_global_proc_is_refused() {
+    let before = "/proc/g()\n\treturn 1\n";
+    let refused = refusal(
+        "global-redefinition",
+        before,
+        &format!("{before}/proc/g()\n\treturn ..() + 1\n"),
+    );
+    // DreamMaker doesn't allow it either
+    assert!(
+        refused.contains("global proc") || refused.contains("duplicate definition"),
+        "{}",
+        refused
+    );
+}
+
+#[test]
+fn in_lists_are_the_words_dreammaker_writes() {
+    // What DreamMaker 516.1688 wrote for each
+    let cases = [
+        ("mob/a in view()", Some(0x7D01)),
+        ("mob/a in view(3)", Some(0x0301)),
+        ("mob/a in oview()", Some(0x7D02)),
+        ("mob/a in oview(1, usr)", Some(0x0102)),
+        ("mob/a in range()", Some(0x7D05)),
+        ("mob/a in range(2)", Some(0x0205)),
+        ("mob/a in orange()", Some(0x7D06)),
+        ("mob/a in orange(2)", Some(0x0206)),
+        ("mob/a in world", Some(0x7F10)),
+        ("obj/a in usr", Some(0x7F08)),
+        ("obj/a in usr.loc", Some(0x7F03)),
+        ("obj/a in usr.contents", Some(0x7F08)),
+        ("mob/a in view(usr)", Some(0x7D01)),
+        ("a", Some(0x7D01)),
+        ("obj/a in src", None),
+        ("mob/a in view(src)", None),
+        ("a in list(1, 2)", None),
+    ];
+    let code: String = cases
+        .iter()
+        .enumerate()
+        .map(|(i, (param, _))| format!("/mob/proc/p{i}({param})\n\treturn\n"))
+        .collect();
+    let world = World::new("in-lists", &code);
+    let snapshot = world.parse();
+    for (i, (param, word)) in cases.iter().enumerate() {
+        let reload = snapshot
+            .compile_reload(&key(&format!("/mob/p{i}"), 0))
+            .unwrap();
+        let expected = match word {
+            Some(word) => InList::Builtin(*word),
+            None => InList::Kept,
+        };
+        assert_eq!(reload.params[0].in_list, expected, "{}", param);
+    }
+}
+
+#[test]
+fn in_list_expressions_can_stay_but_not_change() {
+    let before = "/mob/proc/f(obj/a in src.contents, b)\n\treturn 1\n";
+    let changes = changes(
+        "in-list-kept",
+        before,
+        "/mob/proc/f(obj/a in src.contents, b, c)\n\treturn 2\n",
+    );
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    assert_eq!(changes.reloads[0].params[0].in_list, InList::Kept);
+    let refused = refusal(
+        "in-list-changed",
+        before,
+        "/mob/proc/f(obj/a in src.loc, b)\n\treturn 1\n",
+    );
+    assert!(refused.contains("`in` list expression"), "{}", refused);
 }

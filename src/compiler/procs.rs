@@ -31,6 +31,18 @@ pub struct CompiledProc {
     /// Local variable names, by slot.
     pub locals: Vec<String>,
     pub params: Vec<String>,
+    /// Static locals (and local consts), in the order they're declared.
+    pub statics: Vec<StaticLocal>,
+}
+
+/// A static local: a global the world sets up when it starts.
+#[derive(Debug, Clone)]
+pub struct StaticLocal {
+    pub name: String,
+    /// The scope the proc's code names it with (`proc:PATH#N`).
+    pub scope: String,
+    /// Its initial value, when that's a constant.
+    pub value: Option<dreammaker::constants::Constant>,
 }
 
 /// Marks a static local's entry in `ProcCtx::scopes`.
@@ -57,6 +69,7 @@ pub(super) struct ProcCtx<'a> {
     pub pending_loop_name: Option<(String, String, usize)>,
     /// `var/static` and `var/global` locals: globals under the local's name.
     pub static_locals: Vec<String>,
+    pub statics: Vec<StaticLocal>,
     /// The declared type paths of static locals.
     pub static_local_types: std::collections::HashMap<(String, u32), String>,
     /// Set by the first for loop, label, switch or pick(): from then on DM clears
@@ -116,10 +129,21 @@ impl ProcCtx<'_> {
             .map(|slot| slot & !STATIC_LOCAL)
     }
 
-    /// Declares a static local in the current block, with its type.
-    pub fn declare_static(&mut self, name: &str, ty: String) {
+    /// Declares a static local in the current block, with its type and
+    /// constant initial value.
+    pub fn declare_static(
+        &mut self,
+        name: &str,
+        ty: String,
+        value: Option<dreammaker::constants::Constant>,
+    ) {
         let number = self.static_locals.iter().filter(|s| *s == name).count() as u32;
         self.static_locals.push(name.to_owned());
+        self.statics.push(StaticLocal {
+            name: name.to_owned(),
+            scope: format!("proc:{}#{}", self.proc_path, number),
+            value,
+        });
         self.static_local_types
             .insert((name.to_owned(), number), ty);
         if let Some(scope) = self.scopes.last_mut() {
@@ -163,6 +187,7 @@ pub fn compile_proc(source: &ProcSource) -> Result<CompiledProc, CompileError> {
         iterators: 0,
         pending_loop_name: None,
         static_locals: vec![],
+        statics: vec![],
         static_local_types: Default::default(),
         clear_new_vars: false,
         try_depth: 0,
@@ -209,11 +234,12 @@ pub fn compile_proc(source: &ProcSource) -> Result<CompiledProc, CompileError> {
     super::statements::emit_proc_body(&mut compiler, source, code)?;
 
     compiler.emit_ins(Instruction::End);
-    let locals = compiler.proc.take().unwrap().locals;
+    let ctx = compiler.proc.take().unwrap();
     Ok(CompiledProc {
         nodes: compiler.nodes,
-        locals,
+        locals: ctx.locals,
         params,
+        statics: ctx.statics,
     })
 }
 

@@ -61,6 +61,20 @@ pub struct ProcReload {
     pub locals: Vec<String>,
     pub params: Vec<Param>,
     pub settings: ProcSettings,
+    /// Its static locals. Those the running proc doesn't have yet are new,
+    /// and start as `value`.
+    pub statics: Vec<StaticVar>,
+}
+
+/// A static local (or local const) of a proc.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct StaticVar {
+    pub name: String,
+    /// The scope the proc's code names it with (`proc:PATH#N`).
+    pub scope: String,
+    /// Its initial value, `None` when that isn't a constant.
+    pub value: Option<ConstValue>,
 }
 
 /// A parameter as BYOND keeps it for a proc.
@@ -73,6 +87,74 @@ pub struct Param {
     pub input: u32,
     /// `as command_text` is 1, `as color` 2.
     pub input_extra: u32,
+    /// Where `in` takes its choices from.
+    pub in_list: InList,
+}
+
+/// A parameter's `in` list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum InList {
+    /// A source BYOND has built in, as the word it keeps for it: the kind
+    /// (`view` 1, `oview` 2, `usr.loc` 3, `range` 5, `orange` 6, `usr` 8,
+    /// `world` 0x10) with a range or 0x7D (none given) or 0x7F above it. No
+    /// `in` list is `view()`, 0x7D01.
+    Builtin(u32),
+    /// A list expression, the one the running proc's parameter of this name
+    /// has (DreamMaker compiles each into a proc of its own).
+    Kept,
+}
+
+/// The word BYOND keeps for an `in` list it has built in.
+fn builtin_in_list(in_list: Option<&dreammaker::ast::Expression>) -> Option<u32> {
+    use dreammaker::ast::{Expression, Follow, Term};
+    const NO_RANGE: u32 = 0x7D;
+    const NOT_RANGED: u32 = 0x7F;
+    let Some(expression) = in_list else {
+        return Some(NO_RANGE << 8 | 1);
+    };
+    let Expression::Base { term, follow } = expression else {
+        return None;
+    };
+    let fields: Vec<&str> = follow
+        .iter()
+        .map(|f| match &f.elem {
+            Follow::Field(_, name) => Some(name.as_str()),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    let is_usr = |e: &Expression| matches!(e, Expression::Base { term, follow } if follow.is_empty() && matches!(&term.elem, Term::Ident(i) if i.as_str() == "usr"));
+    match (&term.elem, fields.as_slice()) {
+        (Term::Ident(name), []) if name.as_str() == "world" => Some(NOT_RANGED << 8 | 0x10),
+        (Term::Ident(name), [] | ["contents"]) if name.as_str() == "usr" => {
+            Some(NOT_RANGED << 8 | 8)
+        }
+        (Term::Ident(name), ["loc"]) if name.as_str() == "usr" => Some(NOT_RANGED << 8 | 3),
+        (Term::Call(name, args), []) => {
+            let kind = match name.as_str() {
+                "view" => 1,
+                "oview" => 2,
+                "range" => 5,
+                "orange" => 6,
+                _ => return None,
+            };
+            let mut range = NO_RANGE;
+            for arg in args.iter() {
+                match arg {
+                    Expression::Base { term, follow } if follow.is_empty() => match term.elem {
+                        Term::Int(n) if (0..NO_RANGE as i32).contains(&n) && range == NO_RANGE => {
+                            range = n as u32
+                        }
+                        _ if is_usr(arg) => {}
+                        _ => return None,
+                    },
+                    _ => return None,
+                }
+            }
+            Some(range << 8 | kind)
+        }
+        _ => None,
+    }
 }
 
 /// The `set` statements BYOND keeps in a proc's flags.
@@ -308,6 +390,15 @@ impl Snapshot {
             locals: compiled.locals,
             params: params(value),
             settings: proc_settings(value)?,
+            statics: compiled
+                .statics
+                .into_iter()
+                .map(|s| StaticVar {
+                    name: s.name,
+                    value: s.value.as_ref().and_then(const_value),
+                    scope: s.scope,
+                })
+                .collect(),
         })
     }
 
@@ -399,6 +490,11 @@ pub fn diff(old: &Snapshot, new: &Snapshot, changed_files: Option<&HashSet<PathB
     let new_procs = compare_types(old, new, &mut changes);
     for (key, type_path, name, declared) in new_procs {
         match new.compile_reload(&key) {
+            Ok(code) if code.params.iter().any(|p| p.in_list == InList::Kept) => {
+                changes.refused.push(format!(
+                    "{key}: new, with an `in` list expression, which a reload can't make yet"
+                ))
+            }
             Ok(code) => changes.new_procs.push(NewProc {
                 type_path,
                 name,
@@ -514,17 +610,18 @@ fn dbg_lines(nodes: &[Node]) -> Vec<u32> {
 /// parameter (BYOND keeps it somewhere not mapped yet), and `set` statements
 /// other than `waitfor` and `background`.
 fn signature_change(old: &ProcValue, new: &ProcValue) -> Option<String> {
-    if signature(old) != signature(new)
-        && new
-            .parameters
-            .iter()
-            .chain(old.parameters.iter())
-            .any(|p| p.in_list.is_some())
-    {
-        return Some(
-            "its parameters changed, and one has an `in` list, which a reload can't change yet"
-                .to_owned(),
-        );
+    // A list expression is compiled into a proc of its own, which a reload
+    // can't make yet: it can only keep the one the parameter has
+    for p in new.parameters.iter() {
+        if p.in_list.is_some() && builtin_in_list(p.in_list.as_ref()).is_none() {
+            let before = old.parameters.iter().find(|o| o.name == p.name);
+            if before.map(|o| &o.in_list) != Some(&p.in_list) {
+                return Some(format!(
+                    "parameter {} has a new `in` list expression, which a reload can't make yet",
+                    p.name
+                ));
+            }
+        }
     }
     fn other_settings(v: &ProcValue) -> Vec<&Statement> {
         settings(v.code.as_ref())
@@ -590,6 +687,7 @@ fn params(v: &ProcValue) -> Vec<Param> {
                 name: p.name.as_str().to_owned(),
                 input: input.bits() & 0xFFFF,
                 input_extra: (input.bits() >> 16) & 0x3,
+                in_list: builtin_in_list(p.in_list.as_ref()).map_or(InList::Kept, InList::Builtin),
             }
         })
         .collect()
@@ -677,6 +775,44 @@ fn settings(code: Option<&Block>) -> Vec<&Statement> {
 /// Compares types: what a reload can't change is refused, var defaults that
 /// changed are added to `changes`, and procs new to a type are returned as
 /// (key, type path, name, declared on the type) to be compiled.
+/// A type's definitions of a proc, without SpacemanDMM's declarations of
+/// BYOND's own procs.
+fn real(p: &dreammaker::objtree::TypeProc) -> Vec<&ProcValue> {
+    p.value
+        .iter()
+        .filter(|v| v.location.file != FileId::BUILTINS)
+        .collect()
+}
+
+/// Whether a type's new definitions of a proc all come after the ones it had,
+/// so each definition it had keeps its number. Definitions are numbered in
+/// parse order, so a new one in a file of its own counts as after; one in the
+/// same file as an old one does when no old one's code changed.
+fn appended(
+    old: &Snapshot,
+    new: &Snapshot,
+    old_values: &[&ProcValue],
+    new_values: &[&ProcValue],
+) -> bool {
+    let old_files: Vec<String> = old_values
+        .iter()
+        .map(|v| old.file_name(v.location.file))
+        .collect();
+    let new_files: Vec<String> = new_values
+        .iter()
+        .map(|v| new.file_name(v.location.file))
+        .collect();
+    let same_files = old_files.iter().zip(&new_files).all(|(a, b)| a == b);
+    let same_code = old_values
+        .iter()
+        .zip(new_values)
+        .all(|(a, b)| a.code == b.code && a.parameters == b.parameters);
+    let added_beside_old = new_files[old_files.len()..]
+        .iter()
+        .any(|f| old_files.contains(f));
+    same_files && (same_code || !added_beside_old)
+}
+
 fn compare_types(
     old: &Snapshot,
     new: &Snapshot,
@@ -754,15 +890,10 @@ fn compare_types(
         }
 
         let (op, np) = (&o.get().procs, &n.get().procs);
-        let real = |p: &dreammaker::objtree::TypeProc| {
-            p.value
-                .iter()
-                .filter(|v| v.location.file != FileId::BUILTINS)
-                .count()
-        };
         for (name, proc) in np.iter() {
-            let old_count = op.get(name).map_or(0, real);
-            let new_count = real(proc);
+            let old_values = op.get(name).map(real).unwrap_or_default();
+            let new_values = real(proc);
+            let (old_count, new_count) = (old_values.len(), new_values.len());
             let path = proc_path(n, name.as_str());
             if new_count > old_count {
                 let verb = n
@@ -772,21 +903,29 @@ fn compare_types(
                     changes
                         .refused
                         .push(format!("{path}: new verb (verbs can't be added yet)"));
-                } else if old_count > 0 || new_count > 1 {
+                } else if n.is_root() && old_count > 0 {
+                    // Calls to a global proc go to its last definition by id,
+                    // so callers would never reach the new one
                     changes.refused.push(format!(
-                        "{path}: another definition of a proc the type already defines (only a type's first definition of a proc can be added yet)"
+                        "{path}: another definition of a global proc (code calling it wouldn't reach the new one)"
+                    ));
+                } else if !appended(old, new, &old_values, &new_values) {
+                    changes.refused.push(format!(
+                        "{path}: a new definition might come before one the type already has, which would renumber them (add it after the others, or make it a change of its own)"
                     ));
                 } else {
-                    let key = ProcKey {
-                        path: path.clone(),
-                        override_id: 0,
-                    };
-                    new_procs.push((
-                        key,
-                        n.get().path.clone(),
-                        name.as_str().to_owned(),
-                        proc.declaration.is_some(),
-                    ));
+                    for override_id in old_count..new_count {
+                        let key = ProcKey {
+                            path: path.clone(),
+                            override_id: override_id as u32,
+                        };
+                        new_procs.push((
+                            key,
+                            n.get().path.clone(),
+                            name.as_str().to_owned(),
+                            override_id == 0 && proc.declaration.is_some(),
+                        ));
+                    }
                 }
                 continue;
             } else if new_count < old_count {
@@ -806,7 +945,7 @@ fn compare_types(
             }
         }
         for name in op.keys().filter(|name| !np.contains_key(*name)) {
-            if real(&op[name]) > 0 {
+            if !real(&op[name]).is_empty() {
                 changes.warnings.push(format!(
                     "{}: the proc was removed, and stays in the running world",
                     proc_path(o, name.as_str())

@@ -12,7 +12,7 @@ mod fold;
 mod procs;
 mod statements;
 
-pub use procs::{compile_proc, CompiledProc, ProcSource};
+pub use procs::{compile_proc, CompiledProc, ProcSource, StaticLocal};
 
 mod args;
 mod binary_ops;

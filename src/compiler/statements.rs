@@ -992,7 +992,18 @@ fn emit_var_statement(
     // Static locals are globals, set up when the world starts
     if var.var_type.flags.is_static() || var.var_type.flags.is_const() {
         let ty = var.var_type.type_path.to_string();
-        ctx(compiler).declare_static(var.name.as_str(), ty);
+        let value = match &var.value {
+            None => Some(dreammaker::constants::Constant::Null(None)),
+            Some(value) => {
+                let nowhere = dreammaker::Location {
+                    file: dreammaker::FileId::UNKNOWN,
+                    line: 0,
+                    column: 0,
+                };
+                value.simple_evaluate(nowhere).ok()
+            }
+        };
+        ctx(compiler).declare_static(var.name.as_str(), ty, value);
         return Ok(());
     }
     // The initializer can't see the variable it initializes
