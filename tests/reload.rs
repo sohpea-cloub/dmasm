@@ -160,19 +160,14 @@ fn refuses_what_a_reload_cant_do() {
     let cases = [
         ("new-type", format!("{base}/datum/other\n"), "new type"),
         (
-            "new-var-not-constant",
-            base.replace("var/a = 1", "var/a = 1\n\tvar/list/b = list()"),
-            "new var b starts as",
+            "new-static-not-constant",
+            base.replace("var/a = 1", "var/a = 1\n\tvar/static/list/b = list()"),
+            "new global or static var b starts as",
         ),
         (
             "var-decl",
             base.replace("var/a = 1", "var/static/a = 1"),
             "var a's declaration changed",
-        ),
-        (
-            "var-not-constant",
-            base.replace("var/list/l = list()", "var/list/l = list(1)"),
-            "isn't a constant",
         ),
         (
             "in-list",
@@ -555,4 +550,42 @@ fn in_list_expressions_can_stay_but_not_change() {
         "/mob/proc/f(obj/a in src.loc, b)\n\treturn 1\n",
     );
     assert!(refused.contains("`in` list expression"), "{}", refused);
+}
+
+#[test]
+fn defaults_that_arent_constants_change_the_init_procs() {
+    let before = "/datum/a\n\tvar/list/l = list(1)\n\tvar/n = 2\n/datum/a/b\n/datum/a/c\n\tl = list(3)\n/datum/a/d\n\tvar/list/m = list()\n/datum/e\n";
+    let after = before.replace("list(1)", "list(1, 2)");
+    let first = changes("init-procs", before, &after);
+    assert!(first.refused.is_empty(), "{:?}", first.refused);
+    let mut types: Vec<&str> = first
+        .init_procs
+        .iter()
+        .map(|i| i.type_path.as_str())
+        .collect();
+    types.sort();
+    assert_eq!(types, ["/datum/a", "/datum/a/b", "/datum/a/d"]);
+    assert!(first.init_procs.iter().all(|i| i.code.is_some()));
+    assert!(first.var_defaults.is_empty());
+
+    // A new var whose default isn't a constant, and one that becomes a constant
+    let after = before
+        .replace("\tvar/n = 2\n", "\tvar/n = 2\n\tvar/list/k = list(\"k\")\n")
+        .replace("l = list(3)", "l = null");
+    let second = changes("init-procs-2", before, &after);
+    assert!(second.refused.is_empty(), "{:?}", second.refused);
+    assert_eq!(second.new_vars.len(), 1);
+    assert_eq!(second.new_vars[0].value, ConstValue::Null);
+    let mut types: Vec<&str> = second
+        .init_procs
+        .iter()
+        .map(|i| i.type_path.as_str())
+        .collect();
+    types.sort();
+    assert_eq!(
+        types,
+        ["/datum/a", "/datum/a/b", "/datum/a/c", "/datum/a/d"]
+    );
+    assert_eq!(second.var_defaults.len(), 1, "{:?}", second.var_defaults);
+    assert_eq!(second.var_defaults[0].types, ["/datum/a/c"]);
 }

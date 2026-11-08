@@ -235,6 +235,16 @@ pub struct NewVar {
     pub value: ConstValue,
 }
 
+/// A type's init proc: what each new instance runs to set the vars whose
+/// defaults aren't constants, its own and those it inherits.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct InitProc {
+    pub type_path: String,
+    /// `None` when the type has no such vars any more.
+    pub code: Option<ProcReload>,
+}
+
 /// What changed between two snapshots.
 #[derive(Debug, Default)]
 pub struct Changes {
@@ -244,6 +254,9 @@ pub struct Changes {
     /// subtypes that override a new var.
     pub new_vars: Vec<NewVar>,
     pub var_defaults: Vec<VarDefault>,
+    /// Types whose init proc (which sets the vars whose defaults aren't
+    /// constants on each new instance) changed.
+    pub init_procs: Vec<InitProc>,
     pub line_moves: Vec<LineMove>,
     /// What a reload leaves as it was (removed procs stay in the world, for
     /// one), one line each.
@@ -259,6 +272,7 @@ impl Changes {
             && self.new_procs.is_empty()
             && self.new_vars.is_empty()
             && self.var_defaults.is_empty()
+            && self.init_procs.is_empty()
             && self.line_moves.is_empty()
             && self.refused.is_empty()
     }
@@ -402,6 +416,73 @@ impl Snapshot {
         })
     }
 
+    /// Compiles a type's init proc: an assignment to `src.var` for each of
+    /// `inits`.
+    fn compile_init(&self, ty: TypeRef, inits: &[Init]) -> Result<ProcReload, String> {
+        use dreammaker::ast::{
+            AssignOp, Expression, Follow, Ident, PropertyAccessKind, Spanned, Term,
+        };
+        let block: Block = inits
+            .iter()
+            .map(|init| {
+                let location = init.location;
+                let lhs = Expression::Base {
+                    term: Box::new(Spanned::new(
+                        location,
+                        Term::Ident(Ident::from_nonstatic("src")),
+                    )),
+                    follow: Box::new([Spanned::new(
+                        location,
+                        Follow::Field(PropertyAccessKind::Dot, Ident::from_nonstatic(&init.var)),
+                    )]),
+                };
+                Spanned::new(
+                    location,
+                    Statement::Expr(Expression::AssignOp {
+                        op: AssignOp::Assign,
+                        lhs: Box::new(lhs),
+                        rhs: Box::new(init.value.clone()),
+                    }),
+                )
+            })
+            .collect();
+        let value = ProcValue {
+            location: ty.get().location,
+            parameters: Box::new([]),
+            docs: Default::default(),
+            code: Some(block),
+            body_range: None,
+        };
+        let file = self.file_name(ty.get().location.file);
+        let source = ProcSource {
+            tree: &self.tree,
+            ty,
+            name: "(init)",
+            value: &value,
+            file: &file,
+            debug_info: false,
+        };
+        let path = format!("{}/(init)", ty.get().path);
+        let compiled = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            compile_proc(&source)
+        })) {
+            Ok(Ok(compiled)) => compiled,
+            Ok(Err(e)) => return Err(e.to_string()),
+            Err(_) => return Err("the compiler panicked".to_owned()),
+        };
+        Ok(ProcReload {
+            proc: ProcKey {
+                path,
+                override_id: 0,
+            },
+            nodes: compiled.nodes,
+            locals: compiled.locals,
+            params: vec![],
+            settings: ProcSettings::default(),
+            statics: vec![],
+        })
+    }
+
     /// Compiles one proc, with `DbgFile` and `DbgLine`.
     pub fn compile(&self, key: &ProcKey) -> Result<CompiledProc, String> {
         let (ty, value) = self.find(key).ok_or_else(|| format!("no proc {key}"))?;
@@ -488,6 +569,7 @@ pub fn diff(old: &Snapshot, new: &Snapshot, changed_files: Option<&HashSet<PathB
     }
 
     let new_procs = compare_types(old, new, &mut changes);
+    compare_inits(old, new, &mut changes);
     for (key, type_path, name, declared) in new_procs {
         match new.compile_reload(&key) {
             Ok(code) if code.params.iter().any(|p| p.in_list == InList::Kept) => {
@@ -775,6 +857,99 @@ fn settings(code: Option<&Block>) -> Vec<&Statement> {
 /// Compares types: what a reload can't change is refused, var defaults that
 /// changed are added to `changes`, and procs new to a type are returned as
 /// (key, type path, name, declared on the type) to be compiled.
+/// A var a type's init proc sets.
+#[derive(Clone)]
+struct Init {
+    var: String,
+    /// The type whose definition it is
+    on: String,
+    value: dreammaker::ast::Expression,
+    location: dreammaker::Location,
+}
+
+impl PartialEq for Init {
+    fn eq(&self, other: &Self) -> bool {
+        // Spanned ignores locations, so a moved line is the same
+        self.var == other.var && self.on == other.on && self.value == other.value
+    }
+}
+
+/// The vars a type's init proc sets, as BYOND merges them when the world
+/// starts: its parent's, less those the type sets itself, then the type's own
+/// whose values aren't constants. Global and static vars are set when the
+/// world starts instead.
+fn inits<'a>(t: TypeRef, memo: &'a mut HashMap<usize, Vec<Init>>) -> &'a [Init] {
+    if !memo.contains_key(&t.index().index()) {
+        let mut list = match t.parent_type() {
+            Some(parent) if !t.is_root() => inits(parent, memo).to_vec(),
+            _ => vec![],
+        };
+        let vars = &t.get().vars;
+        list.retain(|init| !vars.contains_key(init.var.as_str()));
+        if !t.is_root() {
+            for (name, var) in vars.iter() {
+                if var.value.location.file == FileId::BUILTINS {
+                    continue;
+                }
+                let flags = t
+                    .get_var_declaration(name.as_str())
+                    .map(|d| d.get().var_type.flags)
+                    .unwrap_or_default();
+                if flags.is_static() || flags.is_const() {
+                    continue;
+                }
+                if let Some(value) = &var.value.expression {
+                    if var_constant(var).is_none() {
+                        list.push(Init {
+                            var: name.as_str().to_owned(),
+                            on: t.get().path.clone(),
+                            value: value.clone(),
+                            location: var.value.location,
+                        });
+                    }
+                }
+            }
+        }
+        memo.insert(t.index().index(), list);
+    }
+    &memo[&t.index().index()]
+}
+
+/// The types whose init procs changed, and their new code.
+fn compare_inits(old: &Snapshot, new: &Snapshot, changes: &mut Changes) {
+    let (mut old_memo, mut new_memo) = (HashMap::new(), HashMap::new());
+    for n in new.tree.iter_types() {
+        if n.is_root() {
+            continue;
+        }
+        let Some(o) = old.find_type(&n.get().path) else {
+            continue;
+        };
+        let new_inits = inits(n, &mut new_memo).to_vec();
+        if inits(o, &mut old_memo) == new_inits.as_slice() {
+            continue;
+        }
+        let code = if new_inits.is_empty() {
+            None
+        } else {
+            match new.compile_init(n, &new_inits) {
+                Ok(code) => Some(code),
+                Err(e) => {
+                    changes.refused.push(format!(
+                        "{}: its init proc doesn't compile: {e}",
+                        n.get().path
+                    ));
+                    continue;
+                }
+            }
+        };
+        changes.init_procs.push(InitProc {
+            type_path: n.get().path.clone(),
+            code,
+        });
+    }
+}
+
 /// A type's definitions of a proc, without SpacemanDMM's declarations of
 /// BYOND's own procs.
 fn real(p: &dreammaker::objtree::TypeProc) -> Vec<&ProcValue> {
@@ -975,11 +1150,22 @@ fn new_var(
         .as_ref()
         .map(|d| d.var_type.flags)
         .unwrap_or_default();
-    let Some(value) = var_constant(var) else {
-        changes.refused.push(format!(
-            "{shown}: new var {name} starts as something other than a constant (a number, text, a type or a file), which a reload can't set up yet"
-        ));
-        return false;
+    let static_like = flags.is_static() || flags.is_const() || n.is_root();
+    let value = match var_constant(var) {
+        Some(value) => value,
+        None if static_like => {
+            changes.refused.push(format!(
+                "{shown}: new global or static var {name} starts as something other than a constant (a number, text, a type or a file), which a reload can't set up yet"
+            ));
+            return false;
+        }
+        // The init proc sets it on new instances
+        None => {
+            changes.warnings.push(format!(
+                "{shown}: new var {name}'s default isn't a constant, so instances that exist already have it as null"
+            ));
+            ConstValue::Null
+        }
     };
     let mut byond_flags = 0;
     if flags.is_static() || n.is_root() {
@@ -1075,25 +1261,20 @@ fn var_default(
         return;
     }
 
-    let not_constant = || {
-        format!(
-            "{shown}: var {name}'s default isn't a constant (a number, text, a type or a file), so it's set by the type's init proc, which a reload can't change yet"
-        )
-    };
+    // A default that isn't a constant is set by the init procs, which
+    // instances that exist already have run
     let Some(Some(value)) = default_value(n, name) else {
-        changes.refused.push(not_constant());
+        if !is_new {
+            changes.warnings.push(format!(
+                "{shown}: var {name}'s default isn't a constant, so only new instances get it"
+            ));
+        }
         return;
     };
     if !is_new {
-        // Where the old default came from an init proc, that proc still sets it
         let old_value = old.find_type(path).and_then(|o| default_value(o, name));
-        match old_value {
-            Some(Some(old_value)) if old_value == value => return,
-            Some(Some(_)) | None => {}
-            Some(None) => {
-                changes.refused.push(not_constant());
-                return;
-            }
+        if old_value == Some(Some(value.clone())) {
+            return;
         }
     }
 
@@ -1129,11 +1310,9 @@ fn const_value(constant: &dreammaker::constants::Constant) -> Option<ConstValue>
         Constant::Float(f) => ConstValue::Number(*f),
         Constant::String(s) => ConstValue::String(s.to_string()),
         Constant::Resource(s) => ConstValue::Resource(s.to_string()),
+        // Proc paths too (`/proc/x`, `/datum/a/verb/y`)
         Constant::Prefab(pop) if pop.vars.is_empty() => {
             let path: Vec<&str> = pop.path.iter().map(|s| s.as_str()).collect();
-            if path.contains(&"proc") || path.contains(&"verb") {
-                return None;
-            }
             ConstValue::Path(format!("/{}", path.join("/")))
         }
         _ => return None,
