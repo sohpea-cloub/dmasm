@@ -139,11 +139,28 @@ pub struct LineMove {
     pub lines: Vec<(u32, u32)>,
 }
 
+/// A var the running world doesn't have yet.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct NewVar {
+    /// The type that declares it, `""` for a global var.
+    pub type_path: String,
+    pub var: String,
+    /// As BYOND keeps them for a declared var: 1 static (or global), 2
+    /// const, 4 tmp.
+    pub flags: u32,
+    /// Its initial value: the declaring type's default, or a global's value.
+    pub value: ConstValue,
+}
+
 /// What changed between two snapshots.
 #[derive(Debug, Default)]
 pub struct Changes {
     pub reloads: Vec<ProcReload>,
     pub new_procs: Vec<NewProc>,
+    /// New vars, which come before the var defaults: those can be for
+    /// subtypes that override a new var.
+    pub new_vars: Vec<NewVar>,
     pub var_defaults: Vec<VarDefault>,
     pub line_moves: Vec<LineMove>,
     /// What a reload leaves as it was (removed procs stay in the world, for
@@ -158,6 +175,7 @@ impl Changes {
     pub fn is_empty(&self) -> bool {
         self.reloads.is_empty()
             && self.new_procs.is_empty()
+            && self.new_vars.is_empty()
             && self.var_defaults.is_empty()
             && self.line_moves.is_empty()
             && self.refused.is_empty()
@@ -702,28 +720,37 @@ fn compare_types(
         }
 
         let (ov, nv) = (&o.get().vars, &n.get().vars);
+        let declaration =
+            |v: &dreammaker::objtree::TypeVar| v.declaration.as_ref().map(|d| d.var_type.clone());
         for (name, var) in nv.iter() {
-            let Some(old_var) = ov.get(name) else {
-                changes
-                    .refused
-                    .push(format!("{shown}: new var {name} (vars can't be added yet)"));
-                continue;
-            };
-            let declaration = |v: &dreammaker::objtree::TypeVar| {
-                v.declaration.as_ref().map(|d| d.var_type.clone())
-            };
-            if declaration(old_var) != declaration(var) {
-                changes
-                    .refused
-                    .push(format!("{shown}: var {name}'s declaration changed"));
-            } else if old_var.value.expression != var.value.expression {
-                var_default(new, o, n, name.as_str(), changes);
+            match ov.get(name) {
+                None if var.declaration.is_some() => {
+                    if new_var(n, name.as_str(), var, changes) {
+                        var_default(old, new, path, name.as_str(), true, changes);
+                    }
+                }
+                // Overriding an inherited var, which it didn't before
+                None => var_default(old, new, path, name.as_str(), false, changes),
+                Some(old_var) if declaration(old_var) != declaration(var) => {
+                    changes
+                        .refused
+                        .push(format!("{shown}: var {name}'s declaration changed"));
+                }
+                Some(old_var) if old_var.value.expression != var.value.expression => {
+                    var_default(old, new, path, name.as_str(), false, changes);
+                }
+                Some(_) => {}
             }
         }
-        for name in ov.keys().filter(|name| !nv.contains_key(*name)) {
-            changes.warnings.push(format!(
-                "{shown}: var {name} was removed, and stays in the running world"
-            ));
+        for (name, var) in ov.iter().filter(|(name, _)| !nv.contains_key(*name)) {
+            if var.declaration.is_some() {
+                changes.warnings.push(format!(
+                    "{shown}: var {name} was removed, and stays in the running world"
+                ));
+            } else {
+                // No longer overridden here: the type goes back to what it inherits
+                var_default(old, new, path, name.as_str(), false, changes);
+            }
         }
 
         let (op, np) = (&o.get().procs, &n.get().procs);
@@ -791,14 +818,94 @@ fn compare_types(
     new_procs
 }
 
-/// A var whose value changed on type `n`: a new default for it and the
-/// subtypes that inherit it, if a reload can do that.
-fn var_default(new: &Snapshot, o: TypeRef, n: TypeRef, name: &str, changes: &mut Changes) {
+/// A var declared on type `n` that the old code didn't have. False when it
+/// can't be added.
+fn new_var(
+    n: TypeRef,
+    name: &str,
+    var: &dreammaker::objtree::TypeVar,
+    changes: &mut Changes,
+) -> bool {
     let shown = if n.is_root() {
         "(global)".to_owned()
     } else {
         n.get().path.clone()
     };
+    let flags = var
+        .declaration
+        .as_ref()
+        .map(|d| d.var_type.flags)
+        .unwrap_or_default();
+    let Some(value) = var_constant(var) else {
+        changes.refused.push(format!(
+            "{shown}: new var {name} starts as something other than a constant (a number, text, a type or a file), which a reload can't set up yet"
+        ));
+        return false;
+    };
+    let mut byond_flags = 0;
+    if flags.is_static() || n.is_root() {
+        byond_flags |= 1;
+    }
+    if flags.is_const() {
+        byond_flags |= 3;
+    }
+    if flags.is_tmp() {
+        byond_flags |= 4;
+    }
+    changes.new_vars.push(NewVar {
+        type_path: n.get().path.clone(),
+        var: name.to_owned(),
+        flags: byond_flags,
+        value,
+    });
+    true
+}
+
+/// The type a var's default on `t` comes from: the nearest of `t` and its
+/// ancestors that sets it.
+fn defined_on<'a>(t: TypeRef<'a>, name: &str) -> Option<TypeRef<'a>> {
+    let mut at = Some(t);
+    while let Some(ty) = at {
+        if ty.get().vars.contains_key(name) {
+            return Some(ty);
+        }
+        at = ty.parent_type();
+    }
+    None
+}
+
+/// The constant a var's default on `t` is, if it is one: `None` inside means
+/// it's set by the type's init proc.
+fn default_value(t: TypeRef, name: &str) -> Option<Option<ConstValue>> {
+    let var = defined_on(t, name)?.get().vars.get(name)?;
+    Some(var_constant(var))
+}
+
+/// A var's value, if it's a constant. SpacemanDMM only works out the value of
+/// vars that aren't static or tmp; a literal is all the others can be.
+fn var_constant(var: &dreammaker::objtree::TypeVar) -> Option<ConstValue> {
+    match &var.value.expression {
+        None => Some(ConstValue::Null),
+        Some(expression) => match &var.value.constant {
+            Some(constant) => const_value(constant),
+            None => const_value(&expression.simple_evaluate(var.value.location).ok()?),
+        },
+    }
+}
+
+/// The default of var `name` on the type at `path` may have changed: a new
+/// default for it and the subtypes that inherit it from there, if a reload
+/// can do that. `is_new` is for a var `path` declares now.
+fn var_default(
+    old: &Snapshot,
+    new: &Snapshot,
+    path: &str,
+    name: &str,
+    is_new: bool,
+    changes: &mut Changes,
+) {
+    let shown = if path.is_empty() { "(global)" } else { path };
+    let Some(n) = new.find_type(path) else { return };
     let Some(declaration) = n.get_var_declaration(name) else {
         changes.refused.push(format!(
             "{shown}: var {name} has a value but no declaration"
@@ -812,32 +919,44 @@ fn var_default(new: &Snapshot, o: TypeRef, n: TypeRef, name: &str, changes: &mut
         ));
         return;
     }
-    if flags.is_const() {
+    // A new var starts with its value; an existing global keeps the one it
+    // has now
+    if n.is_root() || flags.is_static() {
+        if !is_new {
+            changes.warnings.push(format!(
+                "{shown}: {name} is a global var, so its new initial value only applies after a restart"
+            ));
+        }
+        return;
+    }
+    if flags.is_const() && !is_new {
         changes.refused.push(format!(
             "{shown}: {name} is a const, which is compiled into the code that uses it"
         ));
         return;
     }
-    if n.is_root() || flags.is_static() {
-        changes.warnings.push(format!(
-            "{shown}: {name} is a global var, so its new initial value only applies after a restart"
-        ));
-        return;
-    }
 
-    let constant = |t: TypeRef| -> Option<ConstValue> {
-        let var = t.get().vars.get(name)?;
-        if var.value.expression.is_none() {
-            return Some(ConstValue::Null);
-        }
-        const_value(var.value.constant.as_ref()?)
-    };
-    let (Some(_), Some(value)) = (constant(o), constant(n)) else {
-        changes.refused.push(format!(
+    let not_constant = || {
+        format!(
             "{shown}: var {name}'s default isn't a constant (a number, text, a type or a file), so it's set by the type's init proc, which a reload can't change yet"
-        ));
+        )
+    };
+    let Some(Some(value)) = default_value(n, name) else {
+        changes.refused.push(not_constant());
         return;
     };
+    if !is_new {
+        // Where the old default came from an init proc, that proc still sets it
+        let old_value = old.find_type(path).and_then(|o| default_value(o, name));
+        match old_value {
+            Some(Some(old_value)) if old_value == value => return,
+            Some(Some(_)) | None => {}
+            Some(None) => {
+                changes.refused.push(not_constant());
+                return;
+            }
+        }
+    }
 
     // The type and its subtypes that don't set the var themselves
     let mut types = vec![];

@@ -3,7 +3,9 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use dmasm::reload::{diff, Changes, ConstValue, ParseOptions, ProcKey, ProcSettings, Snapshot};
+use dmasm::reload::{
+    diff, Changes, ConstValue, NewVar, ParseOptions, ProcKey, ProcSettings, Snapshot,
+};
 use dmasm::{Instruction, Node};
 
 /// A codebase in a temporary directory: `world.dme` including `code.dm`.
@@ -135,7 +137,7 @@ fn spaceman_dmm_is_not_defined() {
 #[test]
 fn default_arguments_can_change() {
     let changes = changes(
-        "defaults",
+        "default-args",
         "/proc/a(x = 1)\n\treturn x\n",
         "/proc/a(x = 2)\n\treturn x\n",
     );
@@ -158,9 +160,9 @@ fn refuses_what_a_reload_cant_do() {
     let cases = [
         ("new-type", format!("{base}/datum/other\n"), "new type"),
         (
-            "new-var",
-            base.replace("var/a = 1", "var/a = 1\n\tvar/b"),
-            "new var b",
+            "new-var-not-constant",
+            base.replace("var/a = 1", "var/a = 1\n\tvar/list/b = list()"),
+            "new var b starts as",
         ),
         (
             "var-decl",
@@ -363,4 +365,74 @@ fn parameters_and_waitfor_can_change() {
             background: true
         }
     );
+}
+
+#[test]
+fn new_vars_and_their_overrides() {
+    let before = "/datum/a\n/datum/a/b\n/datum/a/c\n/datum/a/b/d\n";
+    let after = "var/g = 3\n/datum/a\n\tvar/x = 1\n\tvar/static/s = \"t\"\n\tvar/tmp/t\n/datum/a/b\n\tx = 2\n/datum/a/c\n/datum/a/b/d\n";
+    let changes = changes("new-vars", before, after);
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    let mut vars = changes.new_vars.clone();
+    vars.sort_by(|a, b| a.var.cmp(&b.var));
+    let var = |type_path: &str, var: &str, flags: u32, value: ConstValue| NewVar {
+        type_path: type_path.to_owned(),
+        var: var.to_owned(),
+        flags,
+        value,
+    };
+    assert_eq!(
+        vars,
+        [
+            var("", "g", 1, ConstValue::Number(3.0)),
+            var("/datum/a", "s", 1, ConstValue::String("t".to_owned())),
+            var("/datum/a", "t", 4, ConstValue::Null),
+            var("/datum/a", "x", 0, ConstValue::Number(1.0)),
+        ]
+    );
+    let mut defaults: Vec<(String, ConstValue, Vec<String>)> = changes
+        .var_defaults
+        .iter()
+        .map(|d| (d.var.clone(), d.value.clone(), d.types.clone()))
+        .collect();
+    defaults.sort_by_key(|d| (d.0.clone(), d.2.clone()));
+    for d in &mut defaults {
+        d.2.sort();
+    }
+    assert_eq!(
+        defaults,
+        [
+            (
+                "t".to_owned(),
+                ConstValue::Null,
+                vec![
+                    "/datum/a".to_owned(),
+                    "/datum/a/b".to_owned(),
+                    "/datum/a/b/d".to_owned(),
+                    "/datum/a/c".to_owned()
+                ]
+            ),
+            (
+                "x".to_owned(),
+                ConstValue::Number(1.0),
+                vec!["/datum/a".to_owned(), "/datum/a/c".to_owned()]
+            ),
+            (
+                "x".to_owned(),
+                ConstValue::Number(2.0),
+                vec!["/datum/a/b".to_owned(), "/datum/a/b/d".to_owned()]
+            ),
+        ]
+    );
+}
+
+#[test]
+fn removing_an_override_goes_back_to_the_inherited_default() {
+    let before = "/datum/a\n\tvar/x = 1\n/datum/a/b\n\tx = 2\n";
+    let after = "/datum/a\n\tvar/x = 1\n/datum/a/b\n";
+    let changes = changes("unoverride", before, after);
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    assert_eq!(changes.var_defaults.len(), 1);
+    assert_eq!(changes.var_defaults[0].value, ConstValue::Number(1.0));
+    assert_eq!(changes.var_defaults[0].types, ["/datum/a/b"]);
 }
