@@ -139,6 +139,19 @@ fn a_const_change_recompiles_its_users() {
     assert_eq!(changes.consts, ["SIZE"]);
     // d names SIZE only in a string, so its code is the same
     assert_eq!(reloaded(&changes), [key("/datum/thing/c", 0)]);
+    // With a line above it, the new code has its new lines: it isn't moved
+    // as well (which would put the old code back)
+    let changes = changes_of(
+        "const-moved",
+        before,
+        &after.replace("/datum/thing\n", "/datum/thing\n\n"),
+    );
+    assert_eq!(reloaded(&changes), [key("/datum/thing/c", 0)]);
+    let moved: Vec<ProcKey> = changes.line_moves.iter().map(|m| m.proc.clone()).collect();
+    assert_eq!(
+        moved,
+        [key("/a", 0), key("/b", 0), key("/datum/thing/d", 0)]
+    );
     // A global const is read from its global by the code that uses it
     assert!(
         changes

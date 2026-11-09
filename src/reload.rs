@@ -1265,13 +1265,23 @@ fn const_users(old: &Snapshot, new: &Snapshot, realigned: &Realigned, changes: &
         let (Ok(before), Ok(after)) = (old.compile(&old_key), new.compile(key)) else {
             continue;
         };
-        if before.nodes == after.nodes {
+        // Moved lines only need moving
+        let code = |nodes: &[Node]| -> Vec<Node> {
+            nodes
+                .iter()
+                .filter(|n| !matches!(n, Node::Instruction(Instruction::DbgLine(_), _)))
+                .cloned()
+                .collect()
+        };
+        if code(&before.nodes) == code(&after.nodes) {
             continue;
         }
         let reload = new.compile_code(key).and_then(|mut reload| {
             new.compile_in_lists(key, &mut reload, |_, _| false)?;
             Ok(reload)
         });
+        // Its new code has its new lines
+        changes.line_moves.retain(|m| m.proc != old_key);
         match reload {
             Ok(reload) => changes.reloads.push(ProcReload {
                 proc: old_key,
