@@ -129,6 +129,28 @@ fn a_define_change_recompiles_its_users() {
 }
 
 #[test]
+fn a_const_change_recompiles_its_users() {
+    let before = "var/const/LIMIT = 3\n/datum/thing\n\tvar/const/SIZE = 2\n/proc/a()\n\treturn LIMIT\n/proc/b()\n\treturn 2\n/datum/thing/proc/c()\n\treturn SIZE * 2\n/datum/thing/proc/d()\n\treturn \"SIZE\"\n";
+    let after = before
+        .replace("LIMIT = 3", "LIMIT = 4")
+        .replace("SIZE = 2", "SIZE = 5");
+    let changes = changes("const", before, &after);
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    assert_eq!(changes.consts, ["SIZE"]);
+    // d names SIZE only in a string, so its code is the same
+    assert_eq!(reloaded(&changes), [key("/datum/thing/c", 0)]);
+    // A global const is read from its global by the code that uses it
+    assert!(
+        changes
+            .warnings
+            .iter()
+            .any(|w| w.contains("LIMIT is a global var")),
+        "{:?}",
+        changes.warnings
+    );
+}
+
+#[test]
 fn spaceman_dmm_is_not_defined() {
     let code = |n: u32| {
         format!("/proc/a()\n#ifdef SPACEMAN_DMM\n\treturn 0\n#else\n\treturn {n}\n#endif\n")

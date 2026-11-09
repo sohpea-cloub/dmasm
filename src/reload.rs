@@ -390,6 +390,9 @@ pub struct Changes {
     /// New defaults of built-in vars (`name`, `icon_state`, `pixel_x`, ...),
     /// which types keep in their records rather than var tables
     pub builtin_defaults: Vec<VarDefault>,
+    /// The consts of types whose values changed. The procs whose code changes
+    /// with them are among the reloads.
+    pub consts: Vec<String>,
     /// Types whose init proc (which sets the vars whose defaults aren't
     /// constants on each new instance) changed.
     pub init_procs: Vec<InitProc>,
@@ -932,7 +935,52 @@ pub fn diff(old: &Snapshot, new: &Snapshot, changed_files: Option<&HashSet<PathB
         }
     }
 
+    const_users(old, new, &mut changes);
     changes
+}
+
+/// The procs whose code changes with the consts whose values did, which the
+/// code they're compiled into doesn't show: those that name one, and compile
+/// to something else now.
+fn const_users(old: &Snapshot, new: &Snapshot, changes: &mut Changes) {
+    if changes.consts.is_empty() {
+        return;
+    }
+    // A name in the syntax tree shows in its debug text, as an identifier,
+    // a field or a string: a cheap way to rule out the rest
+    let names: Vec<String> = changes.consts.iter().map(|c| format!("{c:?}")).collect();
+    let reloaded: HashSet<ProcKey> = changes
+        .reloads
+        .iter()
+        .map(|r| r.proc.clone())
+        .chain(changes.new_procs.iter().map(|p| p.code.proc.clone()))
+        .collect();
+    for key in new.procs.keys() {
+        if reloaded.contains(key) {
+            continue;
+        }
+        let (Some(_), Some((_, new_value))) = (old.find(key), new.find(key)) else {
+            continue;
+        };
+        let text = format!("{:?}{:?}", new_value.code, new_value.parameters);
+        if !names.iter().any(|name| text.contains(name.as_str())) {
+            continue;
+        }
+        let (Ok(before), Ok(after)) = (old.compile(key), new.compile(key)) else {
+            continue;
+        };
+        if before.nodes == after.nodes {
+            continue;
+        }
+        let reload = new.compile_code(key).and_then(|mut reload| {
+            new.compile_in_lists(key, &mut reload, |_, _| false)?;
+            Ok(reload)
+        });
+        match reload {
+            Ok(reload) => changes.reloads.push(reload),
+            Err(e) => changes.refused.push(format!("{key}: doesn't compile: {e}")),
+        }
+    }
 }
 
 /// How the lines of an unchanged proc moved, if they did.
@@ -1841,7 +1889,7 @@ fn var_default(
     let flags = declaration.get().var_type.flags;
     let builtin = declaration.get().location.file == FileId::BUILTINS;
     // A new var starts with its value; an existing global keeps the one it
-    // has now
+    // has now (a global const too: code reads it from the global)
     if n.is_root() || flags.is_static() {
         if !is_new {
             changes.warnings.push(format!(
@@ -1850,10 +1898,12 @@ fn var_default(
         }
         return;
     }
+    // A type's const is compiled into the code that uses it, which is
+    // compiled again (see `const_users`)
     if flags.is_const() && !is_new {
-        changes.refused.push(format!(
-            "{shown}: {name} is a const, which is compiled into the code that uses it"
-        ));
+        if !changes.consts.iter().any(|c| c == name) {
+            changes.consts.push(name.to_owned());
+        }
         return;
     }
 
