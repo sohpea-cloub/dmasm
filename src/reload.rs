@@ -60,7 +60,8 @@ pub struct ProcReload {
     /// Local variable names, by slot.
     pub locals: Vec<String>,
     pub params: Vec<Param>,
-    pub settings: ProcSettings,
+    /// `None` where they're as they were
+    pub settings: Option<ProcSettings>,
     /// Its static locals. Those the running proc doesn't have yet are new,
     /// and start as `value`.
     pub statics: Vec<StaticVar>,
@@ -159,12 +160,25 @@ fn builtin_in_list(in_list: Option<&dreammaker::ast::Expression>) -> Option<u32>
     }
 }
 
-/// The `set` statements BYOND keeps in a proc's flags.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A proc's `set` statements, which BYOND keeps in its table entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ProcSettings {
     pub waitfor: bool,
     pub background: bool,
+    /// `set name`, `desc` and `category`, where set
+    pub name: Option<String>,
+    pub desc: Option<String>,
+    pub category: Option<String>,
+    /// `set category = null`, which hides it from every category
+    pub no_category: bool,
+    pub hidden: bool,
+    pub popup_menu: bool,
+    pub instant: bool,
+    pub invisibility: Option<u8>,
+    /// `set src`: whether it's `=` rather than `in`, and the source as an `in`
+    /// list's word (see `InList::Builtin`)
+    pub src: Option<(bool, u32)>,
 }
 
 impl Default for ProcSettings {
@@ -172,8 +186,82 @@ impl Default for ProcSettings {
         ProcSettings {
             waitfor: true,
             background: false,
+            name: None,
+            desc: None,
+            category: None,
+            no_category: false,
+            hidden: false,
+            popup_menu: true,
+            instant: false,
+            invisibility: None,
+            src: None,
         }
     }
+}
+
+impl ProcSettings {
+    /// The flags of the proc's table entry, as DreamMaker sets them.
+    pub fn flags(&self) -> u32 {
+        let mut flags = 0;
+        if self.hidden {
+            flags |= 0x01;
+        }
+        if self.src.is_some_and(|(equals, _)| equals) {
+            flags |= 0x02;
+        }
+        if self.waitfor {
+            flags |= 0x04;
+        }
+        if self.no_category {
+            flags |= 0x20;
+        }
+        if let Some(invisibility) = self.invisibility {
+            flags |= 0x08;
+            if invisibility != 0 {
+                flags |= 0x10;
+            }
+        }
+        if !self.popup_menu {
+            flags |= 0x40;
+        }
+        if self.background {
+            flags |= 0x100;
+        }
+        if self.instant {
+            flags |= 0x200;
+        }
+        // DreamMaker writes the longer form for these
+        if flags & 0x318 != 0 {
+            flags |= 0x80;
+        }
+        flags
+    }
+
+    /// The word of three bytes after the flags: `set src` (its range, then
+    /// its kind) and the invisibility.
+    pub fn packed(&self) -> u32 {
+        let (range, kind) = match self.src {
+            None => (0xFF, 0),
+            Some((_, word)) => (word >> 8, word & 0xFF),
+        };
+        let invisibility = match self.invisibility {
+            None => 0,
+            Some(0) => 0xFF,
+            Some(n) => n as u32,
+        };
+        range | kind << 8 | invisibility << 16
+    }
+
+    /// The flags `flags` sets, of the ones a proc's settings make.
+    pub const FLAGS: u32 = 0x3FF;
+}
+
+/// New settings for a proc whose code is as it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SettingsChange {
+    pub proc: ProcKey,
+    pub settings: ProcSettings,
 }
 
 /// A proc the running world doesn't have yet.
@@ -284,6 +372,8 @@ pub struct Changes {
     /// which can be on them.
     pub new_types: Vec<NewType>,
     pub reloads: Vec<ProcReload>,
+    /// Procs whose code is as it was, but not their settings
+    pub settings: Vec<SettingsChange>,
     pub new_procs: Vec<NewProc>,
     /// Definitions of procs on types that are gone. They come before new procs,
     /// which can take their place.
@@ -307,6 +397,7 @@ pub struct Changes {
 impl Changes {
     pub fn is_empty(&self) -> bool {
         self.reloads.is_empty()
+            && self.settings.is_empty()
             && self.new_types.is_empty()
             && self.new_procs.is_empty()
             && self.removed_procs.is_empty()
@@ -436,6 +527,13 @@ impl Snapshot {
 
     /// Compiles one proc for a reload: its code, parameters and settings.
     pub fn compile_reload(&self, key: &ProcKey) -> Result<ProcReload, String> {
+        let mut reload = self.compile_code(key)?;
+        reload.settings = Some(self.settings(key)?);
+        Ok(reload)
+    }
+
+    /// Compiles one proc for a reload, without its settings.
+    fn compile_code(&self, key: &ProcKey) -> Result<ProcReload, String> {
         let (_, value) = self.find(key).ok_or_else(|| format!("no proc {key}"))?;
         let compiled = self.compile(key)?;
         let (ty, _) = self.find(key).ok_or_else(|| format!("no proc {key}"))?;
@@ -463,7 +561,7 @@ impl Snapshot {
             nodes: compiled.nodes,
             locals: compiled.locals,
             params: params(value),
-            settings: proc_settings(value)?,
+            settings: None,
             statics,
         })
     }
@@ -575,9 +673,28 @@ impl Snapshot {
             nodes: compiled.nodes,
             locals: compiled.locals,
             params: vec![],
-            settings: ProcSettings::default(),
+            settings: Some(ProcSettings::default()),
             statics: vec![],
         })
+    }
+
+    /// A proc's settings: those of the definition it overrides, with its own
+    /// `set` statements on top, as DreamMaker makes them.
+    pub fn settings(&self, key: &ProcKey) -> Result<ProcSettings, String> {
+        self.settings_with(key, &mut DeclaredSettings::new())
+    }
+
+    fn settings_with(
+        &self,
+        key: &ProcKey,
+        declared: &mut DeclaredSettings,
+    ) -> Result<ProcSettings, String> {
+        let (ty, name, index) = self
+            .procs
+            .get(key)
+            .ok_or_else(|| format!("no proc {key}"))?;
+        let ty = self.find_type(ty).ok_or_else(|| format!("no proc {key}"))?;
+        settings_of(ty, name, *index, declared)
     }
 
     /// Compiles one proc, with `DbgFile` and `DbgLine`.
@@ -702,6 +819,7 @@ pub fn diff(old: &Snapshot, new: &Snapshot, changed_files: Option<&HashSet<PathB
             .map_or(false, |f| files.contains(Path::new(&f))),
     };
 
+    let (mut old_declared, mut new_declared) = (DeclaredSettings::new(), DeclaredSettings::new());
     for (key, _) in new.procs.iter() {
         let (Some((_, old_value)), Some((_, new_value))) = (old.find(key), new.find(key)) else {
             // New and removed procs were refused with the types
@@ -723,16 +841,36 @@ pub fn diff(old: &Snapshot, new: &Snapshot, changed_files: Option<&HashSet<PathB
                 .collect::<Vec<_>>()
         };
         let params_changed = signature(old_value) != signature(new_value);
+        // Inherited from the declaration, so they can change with code
+        // elsewhere
+        let settings = new.settings_with(key, &mut new_declared);
+        let settings = match (
+            old.settings_with(key, &mut old_declared) == settings,
+            settings,
+        ) {
+            (true, _) => None,
+            (false, Ok(settings)) => Some(settings),
+            (false, Err(e)) => {
+                changes.refused.push(format!("{key}: {e}"));
+                continue;
+            }
+        };
         if old_value.code != new_value.code
             || defaults(old_value) != defaults(new_value)
             || params_changed
             || moved_file
         {
-            match new.compile_reload(key) {
-                Ok(reload) => changes.reloads.push(reload),
+            match new.compile_code(key) {
+                Ok(reload) => changes.reloads.push(ProcReload { settings, ..reload }),
                 Err(e) => changes.refused.push(format!("{key}: doesn't compile: {e}")),
             }
             continue;
+        }
+        if let Some(settings) = settings {
+            changes.settings.push(SettingsChange {
+                proc: key.clone(),
+                settings,
+            });
         }
 
         if in_changed_file(key) {
@@ -796,9 +934,8 @@ fn dbg_lines(nodes: &[Node]) -> Vec<u32> {
         .collect()
 }
 
-/// What changed about a proc that a reload can't change: an `in` list on a
-/// parameter (BYOND keeps it somewhere not mapped yet), and `set` statements
-/// other than `waitfor` and `background`.
+/// What changed about a proc that a reload can't change: an `in` list
+/// expression on a parameter.
 fn signature_change(old: &ProcValue, new: &ProcValue) -> Option<String> {
     // A list expression is compiled into a proc of its own, which a reload
     // can't make yet: it can only keep the one the parameter has
@@ -812,18 +949,6 @@ fn signature_change(old: &ProcValue, new: &ProcValue) -> Option<String> {
                 ));
             }
         }
-    }
-    fn other_settings(v: &ProcValue) -> Vec<&Statement> {
-        settings(v.code.as_ref())
-            .into_iter()
-            .filter(|s| !matches!(s, Statement::Setting { name, .. } if name.as_str() == "waitfor" || name.as_str() == "background"))
-            .collect()
-    }
-    if other_settings(old) != other_settings(new) {
-        return Some(
-            "its `set` statements changed (only `waitfor` and `background` can change in a reload)"
-                .to_owned(),
-        );
     }
     None
 }
@@ -883,33 +1008,132 @@ fn params(v: &ProcValue) -> Vec<Param> {
         .collect()
 }
 
-/// A proc's `set waitfor` and `set background`, which have to be numbers.
-fn proc_settings(v: &ProcValue) -> Result<ProcSettings, String> {
-    use dreammaker::ast::{Expression, Term};
-    let mut out = ProcSettings::default();
+/// The settings of the definitions that declare procs, by the declaring type
+/// (its address) and the proc's name: overrides start from them.
+type DeclaredSettings = HashMap<(usize, String), Result<ProcSettings, String>>;
+
+/// The settings of definition `index` of proc `name` on `ty`. An override
+/// starts from the settings of the definition that declares the proc (not the
+/// one it overrides): DreamMaker's `set` is inherited from there.
+fn settings_of(
+    ty: TypeRef,
+    name: &str,
+    index: usize,
+    declared: &mut DeclaredSettings,
+) -> Result<ProcSettings, String> {
+    let mut base = ProcSettings::default();
+    let mut at = Some(ty);
+    while let Some(t) = at {
+        if let Some(proc) = t.get().procs.get(name) {
+            if proc.declaration.is_some() {
+                let first = proc
+                    .value
+                    .iter()
+                    .position(|v| v.location.file != FileId::BUILTINS);
+                if let Some(first) = first {
+                    if !(t.index() == ty.index() && first == index) {
+                        base = declared
+                            .entry((t.get() as *const _ as usize, name.to_owned()))
+                            .or_insert_with(|| proc_settings(&proc.value[first], base))
+                            .clone()?;
+                    }
+                }
+                break;
+            }
+        }
+        at = t.parent_type();
+    }
+    let value = &ty.get().procs[name].value[index];
+    proc_settings(value, base)
+}
+
+/// A definition's `set` statements, on top of `base`.
+fn proc_settings(v: &ProcValue, base: ProcSettings) -> Result<ProcSettings, String> {
+    use dreammaker::ast::{Expression, SettingMode, Term};
+    let mut out = base;
     for setting in settings(v.code.as_ref()) {
-        let Statement::Setting { name, value, .. } = setting else {
+        let Statement::Setting { name, mode, value } = setting else {
             continue;
         };
         let name = name.as_str();
-        if name != "waitfor" && name != "background" {
-            continue;
-        }
-        let on = match value {
-            Expression::Base { term, follow } if follow.is_empty() => match &term.elem {
-                Term::Int(n) => *n != 0,
-                Term::Float(f) => *f != 0.0,
-                _ => return Err(format!("can't tell what `set {name}` is set to")),
-            },
-            _ => return Err(format!("can't tell what `set {name}` is set to")),
+        let unclear = || format!("can't tell what `set {name}` is set to");
+        let number = || -> Result<f32, String> {
+            match value {
+                Expression::Base { term, follow } if follow.is_empty() => match &term.elem {
+                    Term::Int(n) => Ok(*n as f32),
+                    Term::Float(f) => Ok(*f),
+                    _ => Err(unclear()),
+                },
+                _ => Err(unclear()),
+            }
         };
-        if name == "waitfor" {
-            out.waitfor = on;
-        } else {
-            out.background = on;
+        let text = || -> Result<Option<String>, String> {
+            let nowhere = dreammaker::Location {
+                file: FileId::UNKNOWN,
+                line: 0,
+                column: 0,
+            };
+            match value.simple_evaluate(nowhere) {
+                Ok(dreammaker::constants::Constant::String(s)) => crate::compiler::text(s.as_str())
+                    .map(Some)
+                    .ok_or_else(unclear),
+                Ok(dreammaker::constants::Constant::Null(_)) => Ok(None),
+                _ => Err(unclear()),
+            }
+        };
+        match name {
+            "waitfor" => out.waitfor = number()? != 0.0,
+            "background" => out.background = number()? != 0.0,
+            "hidden" => out.hidden = number()? != 0.0,
+            "popup_menu" => out.popup_menu = number()? != 0.0,
+            "instant" => out.instant = number()? != 0.0,
+            "invisibility" => out.invisibility = Some(number()?.clamp(0.0, 255.0) as u8),
+            "name" => out.name = text()?,
+            "desc" => out.desc = text()?,
+            "category" => {
+                out.category = text()?;
+                out.no_category = out.category.is_none();
+            }
+            "src" => {
+                let equals = matches!(mode, SettingMode::Assign);
+                let word = verb_src(value, equals).ok_or_else(|| {
+                    "`set src` to something a reload can't work out yet".to_owned()
+                })?;
+                out.src = Some((equals, word));
+            }
+            // SpacemanDMM's own, for its linter
+            other if other.starts_with("SpacemanDMM_") => {}
+            other => return Err(format!("`set {other}`, which a reload can't make yet")),
         }
     }
     Ok(out)
+}
+
+/// `set src`'s source, as an `in` list's word. `src = usr` and `src = usr.loc`
+/// are kinds of their own.
+fn verb_src(value: &dreammaker::ast::Expression, equals: bool) -> Option<u32> {
+    use dreammaker::ast::{Expression, Follow, Term};
+    if equals {
+        if let Expression::Base { term, follow } = value {
+            if let Term::Ident(name) = &term.elem {
+                if name.as_str() == "usr" {
+                    let fields: Vec<&str> = follow
+                        .iter()
+                        .filter_map(|f| match &f.elem {
+                            Follow::Field(_, name) => Some(name.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    match (fields.as_slice(), follow.len()) {
+                        ([], 0) => return Some(0xFF << 8 | 0x20),
+                        (["loc"], 1) => return Some(0xFF << 8 | 0x03),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    builtin_in_list(Some(value))
 }
 
 /// Every `set` statement in a proc, in order.
@@ -1624,7 +1848,7 @@ fn const_value(constant: &dreammaker::constants::Constant) -> Option<ConstValue>
     Some(match constant {
         Constant::Null(_) => ConstValue::Null,
         Constant::Float(f) => ConstValue::Number(*f),
-        Constant::String(s) => ConstValue::String(s.to_string()),
+        Constant::String(s) => ConstValue::String(crate::compiler::text(s.as_str())?),
         Constant::Resource(s) => ConstValue::Resource(s.to_string()),
         // Proc paths too (`/proc/x`, `/datum/a/verb/y`)
         Constant::Prefab(pop) if pop.vars.is_empty() => {

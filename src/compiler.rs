@@ -24,6 +24,12 @@ mod term;
 mod ternary;
 mod unary;
 
+/// The text a string literal makes, its escapes and text macros as BYOND
+/// keeps them. `raw` is the literal as the parser has it.
+pub(crate) fn text(raw: &str) -> Option<String> {
+    String::from_utf8(strings::parse(raw).ok()?.0).ok()
+}
+
 use chain_builder::ChainBuilder;
 
 fn is_writable(var: &Variable) -> bool {

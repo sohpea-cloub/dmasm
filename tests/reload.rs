@@ -187,9 +187,9 @@ fn refuses_what_a_reload_cant_do() {
             "setting",
             base.replace(
                 "/obj/verb/v()\n\treturn",
-                "/obj/verb/v()\n\tset name = \"V\"\n\treturn",
+                "/obj/verb/v()\n\tset src in usr.loc.contents\n\treturn",
             ),
-            "`set` statements changed",
+            "`set src` to something",
         ),
         (
             "new-verb",
@@ -408,10 +408,11 @@ fn parameters_and_waitfor_can_change() {
     assert_eq!(params, [("a".to_owned(), 0), ("b".to_owned(), 1)]);
     assert_eq!(
         reload.settings,
-        ProcSettings {
+        Some(ProcSettings {
             waitfor: false,
-            background: true
-        }
+            background: true,
+            ..ProcSettings::default()
+        })
     );
 }
 
@@ -766,4 +767,132 @@ fn globals_and_statics_that_arent_constants_come_with_code_to_run_once() {
     let statics = &changes.reloads[0].statics;
     assert_eq!(statics.len(), 1);
     assert!(statics[0].value.is_none() && statics[0].init.is_some());
+}
+
+#[test]
+fn verb_settings_are_the_words_dreammaker_writes() {
+    // (code, flags, packed word) as DreamMaker 516.1688 wrote them
+    let cases: &[(&str, u32, u32)] = &[
+        ("", 0x4, 0xFF),
+        ("set src = usr", 0x6, 0x20FF),
+        ("set src = view()", 0x6, 0x017D),
+        ("set src in oview(1)", 0x4, 0x0201),
+        ("set src in world", 0x4, 0x107F),
+        ("set src = usr.loc", 0x6, 0x03FF),
+        ("set src in usr.contents", 0x4, 0x087F),
+        ("set invisibility = 0", 0x8C, 0xFF00FF),
+        ("set invisibility = 1", 0x9C, 0x0100FF),
+        ("set invisibility = 101", 0x9C, 0x6500FF),
+        ("set popup_menu = 0", 0x44, 0xFF),
+        ("set instant = 1", 0x284, 0xFF),
+        ("set hidden = 1\n\tset popup_menu = 0", 0x45, 0xFF),
+        ("set background = 1", 0x184, 0xFF),
+        ("set waitfor = 0", 0x0, 0xFF),
+        ("set src = usr.contents", 0x6, 0x087F),
+        ("set src in usr.loc", 0x4, 0x037F),
+        ("set src in view(usr, 1)", 0x4, 0x0101),
+        ("set src in view(0)", 0x4, 0x0100),
+        ("set category = null", 0x24, 0xFF),
+    ];
+    let code: String = cases
+        .iter()
+        .enumerate()
+        .map(|(i, (set, _, _))| format!("/mob/verb/v{i}()\n\t{set}\n\treturn\n"))
+        .collect();
+    let world = World::new("verb-settings", &format!("{code}/mob/verb/named()\n\tset name = \"Named Verb\"\n\tset category = \"Cat\"\n\tset desc = \"a desc\"\n\treturn\n"));
+    let snapshot = world.parse();
+    for (i, (set, flags, packed)) in cases.iter().enumerate() {
+        let settings = snapshot.settings(&key(&format!("/mob/v{i}"), 0)).unwrap();
+        assert_eq!(
+            (settings.flags(), settings.packed()),
+            (*flags, *packed),
+            "{}",
+            set
+        );
+    }
+    let named = snapshot.settings(&key("/mob/named", 0)).unwrap();
+    assert_eq!(
+        (
+            named.name.as_deref(),
+            named.desc.as_deref(),
+            named.category.as_deref()
+        ),
+        (Some("Named Verb"), Some("a desc"), Some("Cat"))
+    );
+}
+
+#[test]
+fn changed_settings() {
+    let before = "/mob/verb/a()\n\treturn\n/mob/proc/b()\n\tset name = \"B\"\n\treturn\n";
+    let after = "/mob/verb/a()\n\treturn\n/mob/proc/b()\n\tset name = \"Bee\"\n\tset category = \"Admin\"\n\treturn\n";
+    let changes = changes("changed-settings", before, after);
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    assert_eq!(changes.reloads.len(), 1);
+    assert_eq!(
+        changes.reloads[0]
+            .settings
+            .as_ref()
+            .unwrap()
+            .name
+            .as_deref(),
+        Some("Bee")
+    );
+}
+
+#[test]
+fn settings_come_from_the_declaration() {
+    let code = |set: &str| {
+        format!("/mob/verb/a()\n\tset name = \"A \\\"verb\\\"\"\n\tset category = \"Cat\"\n\t{set}\n\treturn\n/mob/sub/a()\n\tset background = 1\n\treturn\n/mob/sub/sub/a()\n\treturn\n")
+    };
+    let world = World::new("settings-inherited", &code("set waitfor = 0"));
+    let snapshot = world.parse();
+    let settings = |path: &str| snapshot.settings(&key(path, 0)).unwrap();
+    assert_eq!(settings("/mob/a").name.as_deref(), Some("A \"verb\""));
+    // An override gets the declaration's settings and adds its own, but its
+    // own aren't passed on
+    let sub = settings("/mob/sub/a");
+    assert_eq!(
+        (
+            sub.name.as_deref(),
+            sub.category.as_deref(),
+            sub.waitfor,
+            sub.background
+        ),
+        (Some("A \"verb\""), Some("Cat"), false, true)
+    );
+    let subsub = settings("/mob/sub/sub/a");
+    assert_eq!((subsub.waitfor, subsub.background), (false, false));
+
+    // So changing the declaration changes the overrides, whose code is as
+    // it was
+    let changes = changes(
+        "settings-inherited",
+        &code("set waitfor = 0"),
+        &code("set waitfor = 1"),
+    );
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    assert_eq!(reloaded(&changes), [key("/mob/a", 0)]);
+    assert!(changes.reloads[0].settings.as_ref().unwrap().waitfor);
+    let mut changed: Vec<(String, bool)> = changes
+        .settings
+        .iter()
+        .map(|c| (c.proc.path.clone(), c.settings.waitfor))
+        .collect();
+    changed.sort();
+    assert_eq!(
+        changed,
+        [
+            ("/mob/sub/a".to_owned(), true),
+            ("/mob/sub/sub/a".to_owned(), true)
+        ]
+    );
+
+    // Code that changed alone leaves them be
+    let changes = changes_of(
+        "settings-inherited",
+        &code(""),
+        &code("").replace("/mob/sub/sub/a()\n\treturn", "/mob/sub/sub/a()\n\treturn 1"),
+    );
+    assert_eq!(reloaded(&changes), [key("/mob/sub/sub/a", 0)]);
+    assert_eq!(changes.reloads[0].settings, None);
 }
