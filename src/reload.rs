@@ -274,6 +274,8 @@ pub struct NewProc {
     /// Declared on this type (`proc/name`), rather than overriding a proc of
     /// a parent type.
     pub declared: bool,
+    /// A verb: on its type's list of verbs rather than of procs
+    pub verb: bool,
     pub code: ProcReload,
 }
 
@@ -795,7 +797,7 @@ pub fn diff(old: &Snapshot, new: &Snapshot, changed_files: Option<&HashSet<PathB
     };
     changes.new_types.sort_by_cached_key(|t| depth(&t.path));
     compare_inits(old, new, &mut changes);
-    for (key, type_path, name, declared) in new_procs {
+    for (key, type_path, name, declared, verb) in new_procs {
         match new.compile_reload(&key) {
             Ok(code) if code.params.iter().any(|p| p.in_list == InList::Kept) => {
                 changes.refused.push(format!(
@@ -806,6 +808,7 @@ pub fn diff(old: &Snapshot, new: &Snapshot, changed_files: Option<&HashSet<PathB
                 type_path,
                 name,
                 declared,
+                verb,
                 code,
             }),
             Err(e) => changes.refused.push(format!("{key}: doesn't compile: {e}")),
@@ -1186,9 +1189,6 @@ fn settings(code: Option<&Block>) -> Vec<&Statement> {
     out
 }
 
-/// Compares types: what a reload can't change is refused, var defaults that
-/// changed are added to `changes`, and procs new to a type are returned as
-/// (key, type path, name, declared on the type) to be compiled.
 /// Where an expression starts, as near as the AST says.
 fn value_location(
     expression: &dreammaker::ast::Expression,
@@ -1492,11 +1492,14 @@ fn new_type(n: TypeRef, changes: &mut Changes) {
     });
 }
 
+/// Compares types: what a reload can't change is refused, var defaults that
+/// changed are added to `changes`, and procs new to a type are returned as
+/// (key, type path, name, declared on the type, a verb) to be compiled.
 fn compare_types(
     old: &Snapshot,
     new: &Snapshot,
     changes: &mut Changes,
-) -> Vec<(ProcKey, String, String, bool)> {
+) -> Vec<(ProcKey, String, String, bool, bool)> {
     let mut new_procs = vec![];
     let by_path = |s: &'_ Snapshot| -> BTreeMap<String, ()> {
         s.tree
@@ -1588,11 +1591,7 @@ fn compare_types(
                 let verb = n
                     .get_proc_declaration(name.as_str())
                     .is_some_and(|d| d.kind == dreammaker::ast::ProcDeclKind::Verb);
-                if verb {
-                    changes
-                        .refused
-                        .push(format!("{path}: new verb (verbs can't be added yet)"));
-                } else if n.is_root() && old_count > 0 {
+                if n.is_root() && old_count > 0 {
                     // Calls to a global proc go to its last definition by id,
                     // so callers would never reach the new one
                     changes.refused.push(format!(
@@ -1613,6 +1612,7 @@ fn compare_types(
                             n.get().path.clone(),
                             name.as_str().to_owned(),
                             override_id == 0 && proc.declaration.is_some(),
+                            verb,
                         ));
                     }
                 }

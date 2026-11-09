@@ -192,11 +192,6 @@ fn refuses_what_a_reload_cant_do() {
             "`set src` to something",
         ),
         (
-            "new-verb",
-            format!("{base}/obj/verb/w()\n\treturn\n"),
-            "new verb",
-        ),
-        (
             "definition-before",
             format!("/datum/thing/f(x)\n\treturn 2\n{base}"),
             "might come before",
@@ -822,11 +817,24 @@ fn verb_settings_are_the_words_dreammaker_writes() {
 }
 
 #[test]
-fn changed_settings() {
-    let before = "/mob/verb/a()\n\treturn\n/mob/proc/b()\n\tset name = \"B\"\n\treturn\n";
-    let after = "/mob/verb/a()\n\treturn\n/mob/proc/b()\n\tset name = \"Bee\"\n\tset category = \"Admin\"\n\treturn\n";
-    let changes = changes("changed-settings", before, after);
+fn new_verbs_and_changed_settings() {
+    let before = "/mob/sub\n/mob/verb/a()\n\treturn\n/mob/proc/b()\n\tset name = \"B\"\n\treturn\n";
+    let after = "/mob/sub\n/mob/verb/a()\n\treturn\n/mob/proc/b()\n\tset name = \"Bee\"\n\tset category = \"Admin\"\n\treturn\n/mob/verb/c()\n\treturn\n/mob/sub/a()\n\treturn ..()\n";
+    let changes = changes("new-verbs", before, after);
     assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    let mut added: Vec<(String, bool, bool)> = changes
+        .new_procs
+        .iter()
+        .map(|p| (p.code.proc.path.clone(), p.declared, p.verb))
+        .collect();
+    added.sort();
+    assert_eq!(
+        added,
+        [
+            ("/mob/c".to_owned(), true, true),
+            ("/mob/sub/a".to_owned(), false, true)
+        ]
+    );
     assert_eq!(changes.reloads.len(), 1);
     assert_eq!(
         changes.reloads[0]
