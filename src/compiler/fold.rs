@@ -196,8 +196,9 @@ fn static_const(
 
 /// A one-argument math builtin of a constant, as DreamMaker folds it: `None`
 /// if `name` isn't one, `Some(None)` if the value is out of its domain.
-fn math1(name: &str, x: f32, _byond: crate::ByondVersion) -> Option<Option<f32>> {
+fn math1(name: &str, x: f32, byond: crate::ByondVersion) -> Option<Option<f32>> {
     let d = x as f64;
+    let degrees = |radians: f64| super::versions::degrees(byond, radians);
     let r = match name {
         "sqrt" => (d >= 0.0).then(|| d.sqrt()),
         "ceil" => Some(d.ceil()),
@@ -212,9 +213,13 @@ fn math1(name: &str, x: f32, _byond: crate::ByondVersion) -> Option<Option<f32>>
         } else {
             0.0
         }),
-        "sin" => Some(d.to_radians().sin()),
-        "cos" => Some(d.to_radians().cos()),
-        "arctan" => Some(d.atan().to_degrees()),
+        "sin" | "cos" => Some(super::versions::sin_cos(byond, name == "sin", d)),
+        // (516's tan() isn't worked out the way its sin() and cos() are, and
+        // nobody knows how: left to run)
+        "tan" if !byond.at_least(super::versions::BYOND_516) => Some(d.to_radians().tan()),
+        "arcsin" => (-1.0..=1.0).contains(&d).then(|| degrees(d.asin())),
+        "arccos" => (-1.0..=1.0).contains(&d).then(|| degrees(d.acos())),
+        "arctan" => Some(degrees(d.atan())),
         _ => return None,
     };
     Some(r.map(|r| r as f32))
@@ -248,6 +253,18 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
                 Constant::Number(n) => Constant::Number(math1(name.as_str(), n, c.byond)??),
                 _ => return None,
             }
+        }
+        // arctan(x, y): the angle of (x, y), not of (0, 0)
+        Term::Call(name, args) if name.as_str() == "arctan" && args.len() == 2 => {
+            let (Constant::Number(x), Constant::Number(y)) =
+                (value(c, &args[0])?, value(c, &args[1])?)
+            else {
+                return None;
+            };
+            if x == 0.0 && y == 0.0 {
+                return None;
+            }
+            Constant::Number(super::versions::degrees(c.byond, (y as f64).atan2(x as f64)) as f32)
         }
         // isnan(1) and isinf(1) (see versions::clean_nan_fold)
         Term::Call(name, args)
@@ -399,6 +416,8 @@ fn numbers(op: BinaryOp, a: f32, b: f32) -> Option<f32> {
         BinaryOp::Div if b != 0.0 => a / b,
         BinaryOp::Pow => a.powf(b),
         BinaryOp::Mod if int(b) != 0 => int(a).wrapping_rem(int(b)) as f32,
+        // fmod, worked out in double precision
+        BinaryOp::FloatMod if b != 0.0 => (a as f64 % b as f64) as f32,
         BinaryOp::BitAnd => (bits(a) & bits(b)) as f32,
         BinaryOp::BitOr => (bits(a) | bits(b)) as f32,
         BinaryOp::BitXor => (bits(a) ^ bits(b)) as f32,

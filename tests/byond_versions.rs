@@ -82,6 +82,45 @@ fn nan_tests_fold_from_516() {
 }
 
 #[test]
+fn sin_and_cos_of_quarter_turns_are_exact_from_516() {
+    assert_eq!(ret(B515_1647, "sin(180)"), "PushVal 0.00000000000000012246469");
+    assert_eq!(ret(B516_1659, "sin(180)"), "PushInt 0");
+    assert_eq!(ret(B516_1659, "cos(270)"), "PushInt 0");
+    assert_eq!(ret(B515_1647, "cos(1e10)"), "PushVal 0.1736482");
+    assert_eq!(ret(B516_1659, "cos(1e10)"), "PushVal 0.17364818");
+    assert_eq!(ret(B516_1688, "sin(-731.272)"), "PushVal -0.19546643");
+}
+
+#[test]
+fn inverse_trig_rounds_radians_from_515_1647() {
+    assert_eq!(ret(B515_1637, "arctan(16777215)"), "PushInt 90");
+    assert_eq!(ret(ByondVersion::new(515, 1643), "arctan(16777215)"), "PushInt 90");
+    assert_eq!(ret(ByondVersion::new(515, 1644), "arctan(16777215)"), "PushVal 89.99999");
+    assert_eq!(ret(B515_1637, "arctan(2)"), "PushVal 63.434948");
+    assert_eq!(ret(B516_1688, "arctan(2)"), "PushVal 63.43495");
+    assert_eq!(ret(B516_1688, "arctan(1, 2)"), "PushVal 63.43495");
+    assert_eq!(ret(B516_1688, "arctan(3, -4)"), "PushVal -53.1301");
+    assert_eq!(ret(B515_1637, "arccos(0.7071)"), "PushVal 45.000553");
+    assert_eq!(ret(B516_1688, "arccos(0.7071)"), "PushVal 45.00055");
+    assert_eq!(ret(B516_1688, "arcsin(0.5)"), "PushInt 30");
+    // out of their domain: left to run
+    assert_eq!(ret(B516_1688, "arcsin(2)"), "PushInt 2\nArcSin");
+}
+
+#[test]
+fn tan_folds_in_515_only() {
+    assert_eq!(ret(B515_1647, "tan(90)"), "PushVal 16331240000000000");
+    assert_eq!(ret(B516_1688, "tan(30)"), "PushInt 30\nTan2");
+}
+
+#[test]
+fn float_mod_folds() {
+    assert_eq!(ret(B516_1688, "10 %% 3"), "PushInt 1");
+    assert_eq!(ret(B516_1688, "7 %% 0.1"), "PushVal 0.0999999");
+    assert_eq!(ret(B515_1637, "1e30 %% 1e10"), "PushVal 6688855000");
+}
+
+#[test]
 fn builtins_515_lacks_are_calls() {
     let code = "/proc/sign(x)\n\treturn x\n/proc/f(a)\n\treturn sign(a)\n";
     assert_eq!(compile_for(B515_1647, code).unwrap(), "GetVar arg(0)\nCallGlob 1 /proc/sign\nRet\nEnd");

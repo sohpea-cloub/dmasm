@@ -46,6 +46,13 @@ forms) with each build's DreamMaker and comparing. Builds checked: 515.1637, 515
   `bound_pixloc`): there a call to one is a call to a global proc of that name, which a
   codebase may define. `alist()`, `for (k, v in list)` and (before 515.1644)
   `__PROC__` are refused for a build without them.
+- **Folded maths.** 515 converts degrees to radians as they are; 516 first takes the
+  angle to [0, 360) and splits off whole quarter turns, so `sin(180)` is exactly 0. From
+  515.1644 the radians from `arcsin`, `arccos` and
+  `arctan` are rounded to single precision before they're turned into degrees. `%%`
+  folds as `fmod` in double precision. 515's `tan` folds in double precision; 516's
+  doesn't fit any simple model, so the compiler leaves `tan` of a constant to run there
+  (an encoding difference).
 - **`isnan` and `isinf`** of a number fold from 516. Until 516.1669 (and in 516.1671) it folds only the
   test and still reads the flag (`PushInt 0; GetFlag`, which returns whatever the last
   test left: DreamMaker's bug, copied); 516.1670 and from 516.1672 it folds to a

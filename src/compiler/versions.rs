@@ -80,6 +80,50 @@ pub(super) fn nan_test(name: &str, x: f32) -> Option<bool> {
     }
 }
 
+/// The first build whose DreamMaker rounds the result of `arcsin`, `arccos`
+/// and `arctan` to single precision while it's still in radians (before
+/// turning it into degrees in double precision). Earlier ones work in double
+/// precision throughout.
+pub(super) const SINGLE_RADIANS: u32 = 1644;
+
+/// An angle from an inverse trig function, in degrees, as `byond`'s
+/// DreamMaker folds it.
+pub(super) fn degrees(byond: ByondVersion, radians: f64) -> f64 {
+    if byond.at_least(SINGLE_RADIANS) {
+        radians as f32 as f64 * 180.0 / std::f64::consts::PI
+    } else {
+        radians / (std::f64::consts::PI / 180.0)
+    }
+}
+
+/// `sin(x)` or `cos(x)` of `x` degrees as `byond`'s DreamMaker folds it.
+/// From 516 the angle is first taken to [0, 360) and split into a quarter
+/// turn and the rest, so a multiple of 90 gives exactly 0, 1 or -1 (and
+/// `cos(90)` is -0). 515 converts the angle to radians as it is.
+pub(super) fn sin_cos(byond: ByondVersion, sin: bool, x: f64) -> f64 {
+    if !byond.at_least(BYOND_516) {
+        let r = x.to_radians();
+        return if sin { r.sin() } else { r.cos() };
+    }
+    let mut a = x % 360.0;
+    if a < 0.0 {
+        a += 360.0;
+    }
+    let quarter = (a / 90.0).floor();
+    let r = ((a - 90.0 * quarter) * (std::f64::consts::PI / 180.0)).sin_cos();
+    let (s, c) = (r.0, r.1);
+    match (quarter as u32 % 4, sin) {
+        (0, true) => s,
+        (0, false) => c,
+        (1, true) => c,
+        (1, false) => -s,
+        (2, true) => -s,
+        (2, false) => -c,
+        (_, true) => -c,
+        (_, false) => s,
+    }
+}
+
 /// Whether DreamMaker folds this math builtin of a constant in `byond`.
 /// 515 leaves `ceil`, `floor`, `round`, `trunc` and `fract` to run, and 516
 /// folds `isnan` and `isinf` as well.
