@@ -231,6 +231,31 @@ pub(super) fn emit_typed<'a>(
                         }
                     }
 
+                    // An expression a debugger evaluates knows no types, so
+                    // it can't tell a verb from a proc: a call by name finds
+                    // either, as `call(x, "name")()` does
+                    PropertyAccessKind::Dot | PropertyAccessKind::Colon
+                        if compiler.proc.is_none() =>
+                    {
+                        kind = commit_field_buffer(compiler, kind, &mut field_buffer)?;
+                        compiler.emit_move_to_stack(kind)?;
+                        compiler.emit_ins(Instruction::PushVal(crate::Value::DMString(DMString(
+                            ident.as_bytes().to_vec(),
+                        ))));
+                        match args::emit(compiler, args::ArgsContext::List, args.into_vec())? {
+                            args::ArgsResult::Normal => {
+                                compiler.emit_ins(Instruction::CallName(arg_count))
+                            }
+                            args::ArgsResult::Assoc => {
+                                compiler.emit_ins(Instruction::NewAssocList(arg_count));
+                                compiler.emit_ins(Instruction::CallNameArgList);
+                            }
+                            args::ArgsResult::ArgList => {
+                                compiler.emit_ins(Instruction::CallNameArgList)
+                            }
+                        }
+                    }
+
                     // We just treat these as the same
                     // TODO: Should we type check?
                     access @ (PropertyAccessKind::Dot
