@@ -23,6 +23,10 @@ pub struct ProcSource<'a> {
     /// Whether to emit DbgFile and DbgLine, as DreamMaker does for worlds
     /// built with `#define DEBUG`.
     pub debug_info: bool,
+    /// Which of the type's definitions of the proc `value` is, for a value
+    /// that isn't the tree's own (a definition parsed again). Otherwise it's
+    /// found in the tree.
+    pub index: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -218,7 +222,10 @@ pub fn compile_proc(source: &ProcSource) -> Result<CompiledProc, CompileError> {
                 .get()
                 .procs
                 .get(source.name)
-                .map(|p| std::ptr::eq(&p.value[0], source.value));
+                .map(|p| match source.index {
+                    Some(index) => index == 0,
+                    None => std::ptr::eq(&p.value[0], source.value),
+                });
             match declared_here {
                 Some(decl) if first.unwrap_or(false) => {
                     format!("{}/{}/{}", ty_path, decl.kind.name(), source.name)

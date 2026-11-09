@@ -10,7 +10,7 @@ fn main() {
     let tree = parser.parse_object_tree();
     let ty = if a[2].is_empty() { tree.root() } else { tree.find(&a[2]).expect("type") };
     let value = ty.get().procs.get(a[3].as_str()).expect("proc").value.last().unwrap();
-    let source = ProcSource { tree: &tree, ty, name: &a[3], value, file: "test.dm", debug_info: false };
+    let source = ProcSource { tree: &tree, ty, name: &a[3], value, file: "test.dm", debug_info: false, index: None };
     let compiled = compile_proc(&source).expect("compiles");
     print!("{}", dmasm::format(&compiled.nodes));
 }

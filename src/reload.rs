@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 
 use dreammaker::ast::{Block, Statement};
 use dreammaker::objtree::{ObjectTree, ProcValue, TypeRef};
+use dreammaker::preprocessor::DefineHistory;
 use dreammaker::{Context, FileId, Severity};
 
 use crate::compiler::{compile_proc, CompiledProc, ProcSource};
@@ -446,6 +447,20 @@ pub struct Snapshot {
     /// Every proc with code, by key: its type's path, name and which of the
     /// type's values for that name it is.
     procs: BTreeMap<ProcKey, (String, String, usize)>,
+    /// The macros as they stood through the parse, for parsing one file of it
+    /// again (see `reload_file`)
+    defines: Option<DefineHistory>,
+    /// Definitions parsed again from their files since, in place of the
+    /// tree's
+    patched: HashMap<ProcKey, ProcValue>,
+}
+
+/// What changed in one file, parsed again on its own (see
+/// `Snapshot::reload_file`)
+pub struct FileReload {
+    pub changes: Changes,
+    /// The file's definitions as they are now
+    patched: Vec<(ProcKey, ProcValue)>,
 }
 
 impl Snapshot {
@@ -477,10 +492,220 @@ impl Snapshot {
         )
         .map_err(|e| e.to_string())?;
 
-        let mut parser = dreammaker::Parser::new(&ctx, pp);
-        parser.enable_procs();
-        let tree = parser.parse_object_tree();
-        Ok(Self::from_tree(ctx, tree))
+        let tree = {
+            let mut parser = dreammaker::Parser::new(&ctx, &mut pp);
+            parser.enable_procs();
+            parser.parse_object_tree()
+        };
+        let defines = pp.finalize();
+        let mut snapshot = Self::from_tree(ctx, tree);
+        snapshot.defines = Some(defines);
+        Ok(snapshot)
+    }
+
+    /// What changed in `file` (a path from the `.dme`'s directory, `root`),
+    /// parsed again on its own with the macros it had before: much quicker
+    /// than parsing all the code again, for an edit that only changes code in
+    /// the file's procs. `Err` says why everything has to be parsed again:
+    /// something else changed (vars, types, macros, a proc's parameters or
+    /// `set`s, definitions coming or going, other files included). It doesn't
+    /// change the snapshot: `keep` takes the file's new code in once the
+    /// running world has it.
+    pub fn reload_file(&mut self, root: &Path, file: &Path) -> Result<FileReload, String> {
+        let history = self
+            .defines
+            .as_ref()
+            .ok_or("the code was read without its macros")?;
+        let id = self
+            .ctx
+            .files()
+            .get_id(file)
+            .ok_or("it wasn't part of the code")?;
+        let text = std::fs::read(root.join(file)).map_err(|e| e.to_string())?;
+        if String::from_utf8_lossy(&text)
+            .lines()
+            .any(|line| line.trim_start().starts_with("#include"))
+        {
+            return Err("it includes other files".to_owned());
+        }
+
+        // The same files as before, so the same ids, which the macros' places
+        // are given in
+        let ctx = Context::default();
+        self.ctx.files().for_each(|path| {
+            ctx.register_file(path);
+        });
+        let mut pp = history.branch_at_file(id, &ctx);
+        pp.push_file(file.to_owned(), std::io::Cursor::new(text))
+            .map_err(|e| e.to_string())?;
+        let tree = {
+            let mut parser = dreammaker::Parser::new(&ctx, &mut pp);
+            parser.enable_procs();
+            parser.parse_object_tree_without_builtins()
+        };
+        let defines = pp.finalize();
+        if let Some(e) = ctx
+            .errors()
+            .iter()
+            .find(|e| e.severity() == Severity::Error)
+        {
+            return Err(format!("{}: {}", e.location().line, e.description()));
+        }
+        if macros_in(history, id) != macros_in(&defines, id) {
+            return Err("its macros changed".to_owned());
+        }
+
+        let old = self.contents_of(id)?;
+        let mut new = FileContents::default();
+        for ty in tree.iter_types() {
+            let path = &ty.get().path;
+            if !ty.is_root() && self.tree.find(path).is_none() {
+                return Err(format!("{path} is a new type"));
+            }
+            new.add(ty, id);
+        }
+        if old.vars != new.vars {
+            return Err("its vars changed".to_owned());
+        }
+        if old.declarations != new.declarations {
+            return Err("its proc declarations changed".to_owned());
+        }
+        let mut pairs = vec![];
+        for (proc, old_values) in &old.procs {
+            let new_values = new.procs.get(proc).ok_or("definitions were taken away")?;
+            if new_values.len() != old_values.len() {
+                return Err("definitions were added or taken away".to_owned());
+            }
+            for ((key, old_value), (_, new_value)) in old_values.iter().zip(new_values) {
+                let key = key.clone().ok_or("a definition wasn't known")?;
+                let defaults = |v: &ProcValue| {
+                    v.parameters
+                        .iter()
+                        .map(|p| p.default.clone())
+                        .collect::<Vec<_>>()
+                };
+                if signature(old_value) != signature(new_value)
+                    || defaults(old_value) != defaults(new_value)
+                {
+                    return Err(format!("{key}: its parameters changed"));
+                }
+                if settings(old_value.code.as_ref()) != settings(new_value.code.as_ref()) {
+                    return Err(format!("{key}: its `set`s changed"));
+                }
+                pairs.push((key, (*old_value).clone(), (*new_value).clone()));
+            }
+        }
+        if new.procs.len() != old.procs.len() {
+            return Err("definitions were added".to_owned());
+        }
+
+        // Lines that moved need the code as it was, compiled before the new
+        // definitions go in
+        let mut changes = Changes::default();
+        let mut before = HashMap::new();
+        for (key, old_value, new_value) in &pairs {
+            if old_value.code == new_value.code && old_value.location != new_value.location {
+                before.insert(key.clone(), self.compile(key));
+            }
+        }
+        let previous: Vec<(ProcKey, Option<ProcValue>)> = pairs
+            .iter()
+            .map(|(key, _, new_value)| {
+                (
+                    key.clone(),
+                    self.patched.insert(key.clone(), new_value.clone()),
+                )
+            })
+            .collect();
+        for (key, old_value, new_value) in &pairs {
+            if old_value.code != new_value.code {
+                let reload = self.compile_code(key).and_then(|mut reload| {
+                    self.compile_in_lists(key, &mut reload, |_, _| false)?;
+                    Ok(reload)
+                });
+                match reload {
+                    Ok(reload) => changes.reloads.push(reload),
+                    Err(e) => changes.refused.push(format!("{key}: doesn't compile: {e}")),
+                }
+            } else if let Some(Ok(old_code)) = before.remove(key) {
+                // Every line, as `diff` gives them, when any moved
+                let lines: BTreeMap<u32, u32> = match self.compile(key) {
+                    Ok(new_code) => dbg_lines(&old_code.nodes)
+                        .into_iter()
+                        .zip(dbg_lines(&new_code.nodes))
+                        .collect(),
+                    Err(_) => BTreeMap::new(),
+                };
+                let lines: Vec<(u32, u32)> = lines.into_iter().collect();
+                if lines.iter().any(|(o, n)| o != n) {
+                    changes.line_moves.push(LineMove {
+                        proc: key.clone(),
+                        lines,
+                    });
+                }
+            }
+        }
+        for (key, value) in previous {
+            match value {
+                Some(value) => self.patched.insert(key, value),
+                None => self.patched.remove(&key),
+            };
+        }
+        Ok(FileReload {
+            changes,
+            patched: pairs
+                .into_iter()
+                .map(|(key, _, new_value)| (key, new_value))
+                .collect(),
+        })
+    }
+
+    /// Takes in a file's new code, once the running world has it
+    pub fn keep(&mut self, reload: FileReload) {
+        self.patched.extend(reload.patched);
+    }
+
+    /// Runs `f` on the snapshot as it was parsed, without the code files
+    /// parsed again since have
+    pub fn without_patches<R>(&mut self, f: impl FnOnce(&Snapshot) -> R) -> R {
+        let patched = std::mem::take(&mut self.patched);
+        let result = f(self);
+        self.patched = patched;
+        result
+    }
+
+    /// Forgets the code files parsed again since have
+    pub fn clear_patches(&mut self) {
+        self.patched.clear();
+    }
+
+    /// What `file` defines: vars, proc declarations and definitions
+    fn contents_of(&self, file: FileId) -> Result<FileContents<'_>, String> {
+        let mut keys: HashMap<(&str, &str, usize), &ProcKey> = HashMap::new();
+        for (key, (ty, name, index)) in &self.procs {
+            keys.insert((ty.as_str(), name.as_str(), *index), key);
+        }
+        let mut contents = FileContents::default();
+        for ty in self.tree.iter_types() {
+            contents.add(ty, file);
+            let path = &ty.get().path;
+            for (name, proc) in ty.get().procs.iter() {
+                let Some(values) = contents.procs.get_mut(&(path.clone(), name.to_string())) else {
+                    continue;
+                };
+                // By key, and as the snapshot has them now
+                for (key, value) in values.iter_mut() {
+                    let index = proc.value.iter().position(|v| std::ptr::eq(v, *value));
+                    let found =
+                        index.and_then(|i| keys.get(&(path.as_str(), name.as_str(), i)).copied());
+                    *key = found.cloned();
+                    if let Some(patched) = found.and_then(|k| self.patched.get(k)) {
+                        *value = patched;
+                    }
+                }
+            }
+        }
+        Ok(contents)
     }
 
     /// A snapshot of code already parsed into `tree`, with `ctx` holding its
@@ -507,7 +732,13 @@ impl Snapshot {
                 }
             }
         }
-        Snapshot { ctx, tree, procs }
+        Snapshot {
+            ctx,
+            tree,
+            procs,
+            defines: None,
+            patched: HashMap::new(),
+        }
     }
 
     pub fn tree(&self) -> &ObjectTree {
@@ -721,6 +952,7 @@ impl Snapshot {
             value: &value,
             file: &file,
             debug_info,
+            index: None,
         };
         let path = format!("{}/{}", ty.get().path, name);
         let compiled = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -765,7 +997,7 @@ impl Snapshot {
     /// Compiles one proc, with `DbgFile` and `DbgLine`.
     pub fn compile(&self, key: &ProcKey) -> Result<CompiledProc, String> {
         let (ty, value) = self.find(key).ok_or_else(|| format!("no proc {key}"))?;
-        let name = &self.procs[key].1;
+        let (_, name, index) = &self.procs[key];
         let file = self.file_name(value.location.file);
         let source = ProcSource {
             tree: &self.tree,
@@ -774,6 +1006,7 @@ impl Snapshot {
             value,
             file: &file,
             debug_info: true,
+            index: Some(*index),
         };
         // The compiler is new, and one proc it can't handle shouldn't take the
         // whole watcher down
@@ -798,6 +1031,9 @@ impl Snapshot {
     fn find(&self, key: &ProcKey) -> Option<(TypeRef<'_>, &ProcValue)> {
         let (ty, name, index) = self.procs.get(key)?;
         let ty = self.find_type(ty)?;
+        if let Some(value) = self.patched.get(key) {
+            return Some((ty, value));
+        }
         let value = ty.get().procs.get(name.as_str())?.value.get(*index)?;
         Some((ty, value))
     }
@@ -1147,6 +1383,89 @@ fn params(v: &ProcValue) -> Vec<Param> {
             }
         })
         .collect()
+}
+
+/// What one file defines, to tell whether an edit only changed code in procs
+#[derive(Default)]
+struct FileContents<'a> {
+    /// (type, name) -> declaration, type, value
+    vars: BTreeMap<
+        (String, String),
+        (
+            Option<dreammaker::ast::VarType>,
+            Option<dreammaker::ast::Expression>,
+        ),
+    >,
+    /// (type, name) -> kind, flags of the procs it declares
+    declarations: BTreeMap<(String, String), String>,
+    /// (type, name) -> its definitions, in order (with keys, in the snapshot)
+    procs: BTreeMap<(String, String), Vec<(Option<ProcKey>, &'a ProcValue)>>,
+}
+
+impl<'a> FileContents<'a> {
+    fn add(&mut self, ty: TypeRef<'a>, file: FileId) {
+        let path = &ty.get().path;
+        for (name, var) in ty.get().vars.iter() {
+            let declared = var.declaration.as_ref().filter(|d| d.location.file == file);
+            if var.value.location.file == file || declared.is_some() {
+                self.vars.insert(
+                    (path.clone(), name.to_string()),
+                    (
+                        declared.map(|d| d.var_type.clone()),
+                        var.value.expression.clone(),
+                    ),
+                );
+            }
+        }
+        for (name, proc) in ty.get().procs.iter() {
+            if let Some(d) = proc
+                .declaration
+                .as_ref()
+                .filter(|d| d.location.file == file)
+            {
+                self.declarations.insert(
+                    (path.clone(), name.to_string()),
+                    format!("{:?} {:?}", d.kind, d.flags),
+                );
+            }
+            let values: Vec<(Option<ProcKey>, &ProcValue)> = proc
+                .value
+                .iter()
+                .filter(|v| v.location.file == file)
+                .map(|v| (None, v))
+                .collect();
+            if !values.is_empty() {
+                self.procs.insert((path.clone(), name.to_string()), values);
+            }
+        }
+    }
+}
+
+/// The macros a file defines and takes away, in order
+fn macros_in(
+    history: &DefineHistory,
+    file: FileId,
+) -> (
+    Vec<(String, Vec<String>, bool, Vec<dreammaker::lexer::Token>)>,
+    Vec<String>,
+) {
+    let mut defined = vec![];
+    let mut undefined = vec![];
+    for (range, (name, define)) in history.iter() {
+        if range.start.file == file {
+            defined.push((
+                name.to_string(),
+                define.params.iter().map(|p| p.to_string()).collect(),
+                define.variadic,
+                define.subst.clone(),
+            ));
+        }
+        if range.end.file == file {
+            undefined.push(name.to_string());
+        }
+    }
+    undefined.sort();
+    (defined, undefined)
 }
 
 /// The settings of the definitions that declare procs, by the declaring type

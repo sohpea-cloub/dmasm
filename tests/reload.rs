@@ -1083,3 +1083,69 @@ fn settings_come_from_the_declaration() {
     assert_eq!(reloaded(&changes), [key("/mob/sub/sub/a", 0)]);
     assert_eq!(changes.reloads[0].settings, None);
 }
+
+#[test]
+fn one_file_parsed_again_on_its_own() {
+    let before = "#define TWO 2\n/datum/a\n\tvar/x = 1\n/datum/a/proc/f()\n\treturn TWO\n\n/datum/a/proc/g()\n\treturn 3\n";
+    let world = World::new("one-file", before);
+    let file = std::path::Path::new("code/code.dm");
+    let edited: HashSet<PathBuf> = vec![PathBuf::from("code/code.dm")].into_iter().collect();
+    let mut old = world.parse();
+
+    // A change to code: the same as reading it all again finds
+    let after = before.replace("\treturn TWO\n", "\tvar/y = TWO\n\treturn y\n");
+    world.write(&after);
+    let reload = old.reload_file(&world.dir, file).unwrap();
+    let full = diff(&old, &world.parse(), Some(&edited));
+    assert!(
+        reload.changes.refused.is_empty(),
+        "{:?}",
+        reload.changes.refused
+    );
+    assert_eq!(reloaded(&reload.changes), [key("/datum/a/f", 0)]);
+    assert_eq!(reload.changes.reloads[0].nodes, full.reloads[0].nodes);
+    assert_eq!(reload.changes.line_moves, full.line_moves);
+    assert_eq!(reload.changes.line_moves[0].proc, key("/datum/a/g", 0));
+    old.keep(reload);
+
+    // The next edit is to the code as it was kept
+    let again = after.replace("return 3", "return 4");
+    world.write(&again);
+    let reload = old.reload_file(&world.dir, file).unwrap();
+    assert_eq!(reloaded(&reload.changes), [key("/datum/a/g", 0)]);
+    assert!(reload.changes.line_moves.is_empty());
+    old.keep(reload);
+
+    // Anything else, and everything is read again
+    for (name, code, why) in [
+        ("var", again.replace("var/x = 1", "var/x = 2"), "vars"),
+        (
+            "macro",
+            again.replace("#define TWO 2", "#define TWO 3"),
+            "macros",
+        ),
+        (
+            "proc",
+            format!("{}/datum/a/proc/h()\n\treturn 5\n", again),
+            "declarations",
+        ),
+        (
+            "override",
+            format!("{}/datum/a/f()\n\treturn 5\n", again),
+            "added",
+        ),
+        ("type", format!("{}/datum/b\n", again), "new type"),
+        ("parameters", again.replace("g()", "g(z)"), "parameters"),
+        (
+            "setting",
+            again.replace("\treturn 4", "\tset waitfor = FALSE\n\treturn 4"),
+            "`set`s",
+        ),
+    ] {
+        world.write(&code);
+        match old.reload_file(&world.dir, file) {
+            Ok(_) => panic!("{}: reloaded on its own", name),
+            Err(e) => assert!(e.contains(why), "{}: {}", name, e),
+        }
+    }
+}
