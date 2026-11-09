@@ -362,6 +362,24 @@ pub struct NewVar {
     pub init: Option<Box<ProcReload>>,
 }
 
+/// A type's var declared another way now: `static`, `const` or `tmp` (or
+/// `global`) added or taken away.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Redeclared {
+    /// The type that declares it
+    pub type_path: String,
+    pub var: String,
+    /// As for a new var: 1 static (or global), 2 const, 4 tmp.
+    pub flags: u32,
+    /// For a var that's static now: the value it starts with, when it wasn't
+    /// static before or is a const now (`None` keeps the value it has). A
+    /// var that isn't static gets its defaults as var defaults.
+    pub value: Option<ConstValue>,
+    /// Otherwise, code that returns it, for the running world to run once.
+    pub init: Option<Box<ProcReload>>,
+}
+
 /// A type's init proc: what each new instance runs to set the vars whose
 /// defaults aren't constants, its own and those it inherits.
 #[derive(Debug, Clone)]
@@ -395,10 +413,13 @@ pub struct Changes {
     /// The consts of types whose values changed. The procs whose code changes
     /// with them are among the reloads.
     pub consts: Vec<String>,
-    /// Vars declared with another type now (or SpacemanDMM's checks), which
-    /// only matters to the code that uses them: those procs whose code
-    /// changes are among the reloads.
+    /// Vars declared with another type now (or SpacemanDMM's checks, or
+    /// another way), which matters to the code that uses them: those procs
+    /// whose code changes are among the reloads.
     pub retyped: Vec<String>,
+    /// Vars declared another way now. They come after the new vars, and
+    /// before the var defaults, which can be for them.
+    pub redeclared: Vec<Redeclared>,
     /// Types whose init proc (which sets the vars whose defaults aren't
     /// constants on each new instance) changed.
     pub init_procs: Vec<InitProc>,
@@ -419,6 +440,7 @@ impl Changes {
             && self.new_procs.is_empty()
             && self.removed_procs.is_empty()
             && self.new_vars.is_empty()
+            && self.redeclared.is_empty()
             && self.var_defaults.is_empty()
             && self.builtin_defaults.is_empty()
             && self.init_procs.is_empty()
@@ -2085,17 +2107,23 @@ fn compare_types(
                             )
                         })
                     };
-                    if storage(old_var) != storage(var) {
-                        changes.refused.push(format!(
-                            "{shown}: var {name}'s declaration changed (static, const, tmp or `as`)"
-                        ));
-                    } else {
-                        if !changes.retyped.iter().any(|r| r == name.as_str()) {
-                            changes.retyped.push(name.to_string());
-                        }
-                        if old_var.value.expression != var.value.expression {
-                            var_default(old, new, path, name.as_str(), false, changes);
-                        }
+                    if !changes.retyped.iter().any(|r| r == name.as_str()) {
+                        changes.retyped.push(name.to_string());
+                    }
+                    let kind =
+                        |v: &dreammaker::objtree::TypeVar| storage(v).map(|s| (s.0, s.1, s.2));
+                    let static_like =
+                        |v: &dreammaker::objtree::TypeVar| kind(v).is_some_and(|k| k.0 || k.1);
+                    let redeclared = kind(old_var) != kind(var) && !n.is_root();
+                    if redeclared {
+                        redeclare(new, n, name.as_str(), old_var, var, changes);
+                    }
+                    // Unless that gave it its values
+                    let valued = redeclared
+                        && (static_like(old_var) != static_like(var)
+                            || kind(var).is_some_and(|k| k.1));
+                    if !valued && old_var.value.expression != var.value.expression {
+                        var_default(old, new, path, name.as_str(), false, changes);
                     }
                 }
                 Some(old_var) if old_var.value.expression != var.value.expression => {
@@ -2215,43 +2243,45 @@ fn new_var(
         .map(|d| d.var_type.flags)
         .unwrap_or_default();
     let static_like = flags.is_static() || flags.is_const() || n.is_root();
-    let mut init = None;
-    let value = match var_constant(var) {
-        Some(value) => value,
+    let (value, init) = if static_like {
         // The world sets it when it starts, so the reload sets it now
-        None if static_like => {
-            let Some(expression) = &var.value.expression else {
-                return false;
-            };
-            let location = value_location(expression, var.value.location);
-            let declared = var
-                .declaration
-                .as_ref()
-                .map(|d| d.var_type.type_path.to_string())
-                .unwrap_or_default();
-            match snapshot.compile_value(n, expression, &declared, location) {
-                Ok(code) => init = Some(Box::new(code)),
-                Err(e) => {
-                    changes.refused.push(format!(
-                        "{shown}: new var {name}'s initial value doesn't compile: {e}"
-                    ));
-                    return false;
-                }
-            }
-            ConstValue::Null
-        }
-        // The init proc sets it on new instances
-        None => {
-            if !new_type {
-                changes.warnings.push(format!(
-                    "{shown}: new var {name}'s default isn't a constant, so instances that exist already have it as null"
+        match static_initial(snapshot, n, var) {
+            Ok(value) => value,
+            Err(e) => {
+                changes.refused.push(format!(
+                    "{shown}: new var {name}'s initial value doesn't compile: {e}"
                 ));
+                return false;
             }
-            ConstValue::Null
+        }
+    } else {
+        match var_constant(var) {
+            Some(value) => (value, None),
+            // The init proc sets it on new instances
+            None => {
+                if !new_type {
+                    changes.warnings.push(format!(
+                        "{shown}: new var {name}'s default isn't a constant, so instances that exist already have it as null"
+                    ));
+                }
+                (ConstValue::Null, None)
+            }
         }
     };
+    changes.new_vars.push(NewVar {
+        type_path: n.get().path.clone(),
+        var: name.to_owned(),
+        flags: byond_flags(flags, n.is_root()),
+        value,
+        init,
+    });
+    true
+}
+
+/// A declared var's flags, as BYOND keeps them
+fn byond_flags(flags: dreammaker::ast::VarTypeFlags, global: bool) -> u32 {
     let mut byond_flags = 0;
-    if flags.is_static() || n.is_root() {
+    if flags.is_static() || global {
         byond_flags |= 1;
     }
     if flags.is_const() {
@@ -2260,14 +2290,120 @@ fn new_var(
     if flags.is_tmp() {
         byond_flags |= 4;
     }
-    changes.new_vars.push(NewVar {
-        type_path: n.get().path.clone(),
+    byond_flags
+}
+
+/// The value a static (or global, or const) var starts with: a constant, or
+/// null and code that returns it, for the world to run once.
+fn static_initial(
+    snapshot: &Snapshot,
+    n: TypeRef,
+    var: &dreammaker::objtree::TypeVar,
+) -> Result<(ConstValue, Option<Box<ProcReload>>), String> {
+    if let Some(value) = var_constant(var) {
+        return Ok((value, None));
+    }
+    let Some(expression) = &var.value.expression else {
+        return Ok((ConstValue::Null, None));
+    };
+    let location = value_location(expression, var.value.location);
+    let declared = var
+        .declaration
+        .as_ref()
+        .map(|d| d.var_type.type_path.to_string())
+        .unwrap_or_default();
+    let code = snapshot
+        .compile_value(n, expression, &declared, location)
+        .map_err(|e| e.to_string())?;
+    Ok((ConstValue::Null, Some(Box::new(code))))
+}
+
+/// A var type `n` declares, declared another way now (`static`, `const` or
+/// `tmp`). The code that uses it is compiled again (it's among the
+/// retyped). Where it isn't static now, every type that has it gets its
+/// default from the var defaults.
+fn redeclare(
+    new: &Snapshot,
+    n: TypeRef,
+    name: &str,
+    old_var: &dreammaker::objtree::TypeVar,
+    var: &dreammaker::objtree::TypeVar,
+    changes: &mut Changes,
+) {
+    let path = n.get().path.clone();
+    let flags_of = |v: &dreammaker::objtree::TypeVar| {
+        v.declaration
+            .as_ref()
+            .map(|d| d.var_type.flags)
+            .unwrap_or_default()
+    };
+    let (old_flags, flags) = (flags_of(old_var), flags_of(var));
+    let is_static = |f: dreammaker::ast::VarTypeFlags| f.is_static() || f.is_const();
+    let mut redeclared = Redeclared {
+        type_path: path.clone(),
         var: name.to_owned(),
-        flags: byond_flags,
-        value,
-        init,
-    });
-    true
+        flags: byond_flags(flags, false),
+        value: None,
+        init: None,
+    };
+
+    if is_static(flags) {
+        // A static var keeps the value it has, unless it wasn't one
+        if !is_static(old_flags) || flags.is_const() {
+            match static_initial(new, n, var) {
+                Ok((value, init)) => {
+                    redeclared.value = Some(value);
+                    redeclared.init = init;
+                }
+                Err(e) => {
+                    changes.refused.push(format!(
+                        "{path}: var {name}'s initial value doesn't compile: {e}"
+                    ));
+                    return;
+                }
+            }
+        }
+        changes.redeclared.push(redeclared);
+        return;
+    }
+
+    changes.redeclared.push(redeclared);
+    if !is_static(old_flags) {
+        return;
+    }
+    // Each type's default, the constants grouped; the init procs set the
+    // others on new instances
+    let mut defaults: Vec<VarDefault> = vec![];
+    let mut computed = false;
+    for ty in new.tree.iter_types() {
+        let mut at = Some(ty);
+        while let Some(t) = at {
+            if t.index() == n.index() {
+                break;
+            }
+            at = t.parent_type();
+        }
+        if at.is_none() {
+            continue;
+        }
+        match default_value(ty, name) {
+            Some(Some(value)) => match defaults.iter_mut().find(|d| d.value == value) {
+                Some(d) => d.types.push(ty.get().path.clone()),
+                None => defaults.push(VarDefault {
+                    var: name.to_owned(),
+                    value,
+                    types: vec![ty.get().path.clone()],
+                }),
+            },
+            _ => computed = true,
+        }
+    }
+    if computed {
+        changes.warnings.push(format!(
+            "{path}: var {name}'s default isn't a constant, so instances that exist already have it as null"
+        ));
+    }
+    changes.var_defaults.extend(defaults);
 }
 
 /// The type a var's default on `t` comes from: the nearest of `t` and its

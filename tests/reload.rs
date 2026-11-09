@@ -172,14 +172,82 @@ fn a_var_declared_with_another_type_recompiles_its_users() {
     assert_eq!(changes.retyped, ["items"]);
     // Whatever count compiles to now, other is left alone
     assert!(!reloaded(&changes).contains(&key("/datum/holder/other", 0)));
+}
 
-    // How it's stored can't change
-    let refused = refusal(
-        "retyped-tmp",
-        "/datum/holder\n\tvar/items = 1\n",
-        "/datum/holder\n\tvar/tmp/items = 1\n",
+#[test]
+fn vars_declared_another_way() {
+    let base = "/datum/a\n\tvar/x = 1\n/datum/a/b\n/proc/f()\n\tvar/datum/a/a = new\n\treturn a.x\n/datum/a/proc/g()\n\treturn x\n";
+    let redeclared = |changes: &Changes| -> Vec<(String, u32, Option<ConstValue>)> {
+        assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+        changes
+            .redeclared
+            .iter()
+            .map(|r| (r.var.clone(), r.flags, r.value.clone()))
+            .collect()
+    };
+
+    // Static: its value goes in the global, and the code that reads it reads
+    // that instead
+    let changes = changes_of(
+        "to-static",
+        base,
+        &base.replace("var/x = 1", "var/static/x = 2"),
     );
-    assert!(refused.contains("declaration changed"), "{}", refused);
+    assert_eq!(
+        redeclared(&changes),
+        [("x".to_owned(), 1, Some(ConstValue::Number(2.0)))]
+    );
+    assert_eq!(reloaded(&changes), [key("/datum/a/g", 0), key("/f", 0)]);
+    assert!(changes.var_defaults.is_empty());
+
+    // A const too
+    let changes = changes_of(
+        "to-const",
+        base,
+        &base.replace("var/x = 1", "var/const/x = 1"),
+    );
+    assert_eq!(
+        redeclared(&changes),
+        [("x".to_owned(), 3, Some(ConstValue::Number(1.0)))]
+    );
+    assert_eq!(reloaded(&changes), [key("/datum/a/g", 0), key("/f", 0)]);
+
+    // And back, with a subtype that sets it now: each type gets its default
+    let before = base.replace("var/x = 1", "var/static/x = 1");
+    let after = base.replace("/datum/a/b\n", "/datum/a/b\n\tx = 5\n");
+    let changes = changes_of("from-static", &before, &after);
+    assert!(changes.line_moves.is_empty(), "{:?}", changes.line_moves);
+    assert_eq!(redeclared(&changes), [("x".to_owned(), 0, None)]);
+    assert_eq!(reloaded(&changes), [key("/datum/a/g", 0), key("/f", 0)]);
+    let mut defaults: Vec<(ConstValue, Vec<String>)> = changes
+        .var_defaults
+        .iter()
+        .map(|d| (d.value.clone(), d.types.clone()))
+        .collect();
+    defaults.sort_by_key(|d| d.1.clone());
+    defaults.dedup();
+    assert_eq!(
+        defaults,
+        [
+            (ConstValue::Number(1.0), vec!["/datum/a".to_owned()]),
+            (ConstValue::Number(5.0), vec!["/datum/a/b".to_owned()])
+        ]
+    );
+
+    // tmp is only a flag; a static that stays static keeps its value
+    let changes = changes_of("to-tmp", base, &base.replace("var/x = 1", "var/tmp/x = 1"));
+    assert_eq!(redeclared(&changes), [("x".to_owned(), 4, None)]);
+    assert!(reloaded(&changes).is_empty());
+    let changes = changes_of(
+        "static-tmp",
+        &before,
+        &before.replace("var/static/x", "var/static/tmp/x"),
+    );
+    assert_eq!(redeclared(&changes), [("x".to_owned(), 5, None)]);
+
+    // `as` is only for compiling
+    let changes = changes_of("as", base, &base.replace("var/x = 1", "var/x = 1 as num"));
+    assert!(redeclared(&changes).is_empty());
 }
 
 #[test]
@@ -221,11 +289,6 @@ fn refuses_what_a_reload_cant_do() {
             "new-type-builtin",
             format!("{base}/mob/other\n\tckey = \"someone\"\n"),
             "sets ckey",
-        ),
-        (
-            "var-decl",
-            base.replace("var/a = 1", "var/static/a = 1"),
-            "var a's declaration changed",
         ),
         (
             "setting",
