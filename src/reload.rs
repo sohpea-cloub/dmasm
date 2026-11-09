@@ -1479,6 +1479,11 @@ const BUILTIN_VARS: &[&str] = &[
     "mouse_drop_pointer",
     "mouse_over_pointer",
     "override",
+    // A mob type's, in the mob table
+    "key",
+    "sight",
+    "see_in_dark",
+    "see_invisible",
 ];
 
 /// Reports a type the running world doesn't have, with the fields of its
@@ -1491,17 +1496,6 @@ fn new_type(n: TypeRef, changes: &mut Changes) {
             .push(format!("{path}: new type with no parent"));
         return;
     };
-    let mut at = Some(n);
-    while let Some(t) = at {
-        if t.get().path == "/mob" {
-            changes.refused.push(format!(
-                "{path}: new mob type (mob types can't be added yet)"
-            ));
-            return;
-        }
-        at = t.parent_type();
-    }
-
     let mut fields = vec![];
     let mut refused = false;
     for (name, var) in n.get().vars.iter() {

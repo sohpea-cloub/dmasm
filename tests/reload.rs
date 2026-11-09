@@ -164,14 +164,9 @@ fn refuses_what_a_reload_cant_do() {
     let base = "/datum/thing\n\tvar/a = 1\n\tvar/list/l = list()\n/datum/thing/proc/f(x)\n\tset waitfor = FALSE\n\treturn x\n/obj/verb/v()\n\treturn\n";
     let cases = [
         (
-            "new-mob-type",
-            format!("{base}/mob/other\n"),
-            "new mob type",
-        ),
-        (
             "new-type-builtin",
-            format!("{base}/obj/other\n\ttag = \"t\"\n"),
-            "sets tag",
+            format!("{base}/mob/other\n\tckey = \"someone\"\n"),
+            "sets ckey",
         ),
         (
             "var-decl",
