@@ -606,12 +606,28 @@ impl Snapshot {
             if new(&param.name, expression) {
                 let location = value_location(expression, value.location);
                 let code = self
-                    .compile_value(ty, expression, "", location)
+                    .compile_in_list(ty, expression, location)
                     .map_err(|e| format!("parameter {}'s `in` list: {e}", param.name))?;
                 param.in_list = InList::New(Box::new(code));
             }
         }
         Ok(())
+    }
+
+    /// Compiles a parameter's `in` list: code that returns `expression`, with
+    /// its file and line, as DreamMaker gives a DEBUG build's
+    fn compile_in_list(
+        &self,
+        ty: TypeRef,
+        expression: &dreammaker::ast::Expression,
+        location: dreammaker::Location,
+    ) -> Result<ProcReload, String> {
+        use dreammaker::ast::{Spanned, Statement};
+        let block: Block = Box::new([Spanned::new(
+            location,
+            Statement::Return(Some(expression.clone())),
+        )]);
+        self.compile_synthetic(ty, "(in list)", block, location, true)
     }
 
     /// Compiles code that returns `expression`, evaluated on `ty` (the root
@@ -644,7 +660,7 @@ impl Snapshot {
             }
         }
         let block: Block = Box::new([Spanned::new(location, Statement::Return(Some(expression)))]);
-        self.compile_synthetic(ty, "(value)", block, ty.get().location)
+        self.compile_synthetic(ty, "(value)", block, ty.get().location, false)
     }
 
     /// Compiles a type's init proc: an assignment to `src.var` for each of
@@ -677,17 +693,18 @@ impl Snapshot {
                 )
             })
             .collect();
-        self.compile_synthetic(ty, "(init)", block, ty.get().location)
+        self.compile_synthetic(ty, "(init)", block, ty.get().location, false)
     }
 
     /// Compiles code the source doesn't have as a proc of its own, as a proc
-    /// on `ty` called `name`.
+    /// on `ty` called `name`, with `DbgFile` and `DbgLine` if `debug_info`.
     fn compile_synthetic(
         &self,
         ty: TypeRef,
         name: &str,
         block: Block,
         location: dreammaker::Location,
+        debug_info: bool,
     ) -> Result<ProcReload, String> {
         let value = ProcValue {
             location,
@@ -703,7 +720,7 @@ impl Snapshot {
             name,
             value: &value,
             file: &file,
-            debug_info: false,
+            debug_info,
         };
         let path = format!("{}/{}", ty.get().path, name);
         let compiled = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

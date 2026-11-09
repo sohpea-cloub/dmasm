@@ -700,6 +700,13 @@ fn in_list_expressions_are_kept_or_compiled() {
         "{}",
         dmasm::format(&code.nodes)
     );
+    // With its file and line, as DreamMaker gives a DEBUG build's
+    let text = dmasm::format(&code.nodes);
+    assert!(
+        text.starts_with("DbgFile") && text.contains("DbgLine 3"),
+        "{}",
+        text
+    );
 }
 
 #[test]
