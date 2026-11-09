@@ -847,7 +847,11 @@ pub fn diff(old: &Snapshot, new: &Snapshot, changed_files: Option<&HashSet<PathB
         return changes;
     }
 
-    let new_procs = compare_types(old, new, &mut changes);
+    // The paths whose definitions were added or removed among others: which
+    // old definition each new one is (see `align`)
+    let mut realigned = Realigned::new();
+    let new_procs = compare_types(old, new, &mut changes, &mut realigned);
+    let old_key = |key: &ProcKey| old_key(&realigned, key);
     // Parents first, whatever their paths
     let depth = |path: &str| {
         let mut depth = 0;
@@ -886,7 +890,13 @@ pub fn diff(old: &Snapshot, new: &Snapshot, changed_files: Option<&HashSet<PathB
 
     let (mut old_declared, mut new_declared) = (DeclaredSettings::new(), DeclaredSettings::new());
     for (key, _) in new.procs.iter() {
-        let (Some((_, old_value)), Some((_, new_value))) = (old.find(key), new.find(key)) else {
+        // A new definition among others is one of the new procs. The rest are
+        // known by their numbers in the running world, the old ones.
+        let Some(old_key) = old_key(key) else {
+            continue;
+        };
+        let (Some((_, old_value)), Some((_, new_value))) = (old.find(&old_key), new.find(key))
+        else {
             // New and removed procs were refused with the types
             continue;
         };
@@ -905,7 +915,7 @@ pub fn diff(old: &Snapshot, new: &Snapshot, changed_files: Option<&HashSet<PathB
         // elsewhere
         let settings = new.settings_with(key, &mut new_declared);
         let settings = match (
-            old.settings_with(key, &mut old_declared) == settings,
+            old.settings_with(&old_key, &mut old_declared) == settings,
             settings,
         ) {
             (true, _) => None,
@@ -934,36 +944,60 @@ pub fn diff(old: &Snapshot, new: &Snapshot, changed_files: Option<&HashSet<PathB
                 Ok(reload)
             });
             match reload {
-                Ok(reload) => changes.reloads.push(ProcReload { settings, ..reload }),
+                Ok(reload) => changes.reloads.push(ProcReload {
+                    settings,
+                    proc: old_key,
+                    ..reload
+                }),
                 Err(e) => changes.refused.push(format!("{key}: doesn't compile: {e}")),
             }
             continue;
         }
         if let Some(settings) = settings {
             changes.settings.push(SettingsChange {
-                proc: key.clone(),
+                proc: old_key.clone(),
                 settings,
             });
         }
 
         if in_changed_file(key) {
-            if let Some(lines) = line_move(old, new, key, old_value, new_value) {
+            if let Some(lines) = line_move(old, new, &old_key, key, old_value, new_value) {
                 changes.line_moves.push(LineMove {
-                    proc: key.clone(),
+                    proc: old_key,
                     lines,
                 });
             }
         }
     }
 
-    const_users(old, new, &mut changes);
+    const_users(old, new, &realigned, &mut changes);
     changes
+}
+
+/// For each path whose definitions were added or removed among the others,
+/// which old definition each new one is: `None` for one that's new.
+type Realigned = HashMap<String, Vec<Option<u32>>>;
+
+/// The old key of the definition `key` names in the new parse, `None` for a
+/// new one.
+fn old_key(realigned: &Realigned, key: &ProcKey) -> Option<ProcKey> {
+    match realigned.get(&key.path) {
+        None => Some(key.clone()),
+        Some(map) => map
+            .get(key.override_id as usize)
+            .copied()
+            .flatten()
+            .map(|override_id| ProcKey {
+                path: key.path.clone(),
+                override_id,
+            }),
+    }
 }
 
 /// The procs whose code changes with the consts whose values did, or the
 /// vars whose declared types did, which their own code doesn't show: those
 /// that name one, and compile to something else now.
-fn const_users(old: &Snapshot, new: &Snapshot, changes: &mut Changes) {
+fn const_users(old: &Snapshot, new: &Snapshot, realigned: &Realigned, changes: &mut Changes) {
     if changes.consts.is_empty() && changes.retyped.is_empty() {
         return;
     }
@@ -975,24 +1009,23 @@ fn const_users(old: &Snapshot, new: &Snapshot, changes: &mut Changes) {
         .chain(&changes.retyped)
         .map(|c| format!("{c:?}"))
         .collect();
-    let reloaded: HashSet<ProcKey> = changes
-        .reloads
-        .iter()
-        .map(|r| r.proc.clone())
-        .chain(changes.new_procs.iter().map(|p| p.code.proc.clone()))
-        .collect();
+    // By their old keys
+    let reloaded: HashSet<ProcKey> = changes.reloads.iter().map(|r| r.proc.clone()).collect();
     for key in new.procs.keys() {
-        if reloaded.contains(key) {
+        let Some(old_key) = old_key(realigned, key) else {
+            continue;
+        };
+        if reloaded.contains(&old_key) {
             continue;
         }
-        let (Some(_), Some((_, new_value))) = (old.find(key), new.find(key)) else {
+        let (Some(_), Some((_, new_value))) = (old.find(&old_key), new.find(key)) else {
             continue;
         };
         let text = format!("{:?}{:?}", new_value.code, new_value.parameters);
         if !names.iter().any(|name| text.contains(name.as_str())) {
             continue;
         }
-        let (Ok(before), Ok(after)) = (old.compile(key), new.compile(key)) else {
+        let (Ok(before), Ok(after)) = (old.compile(&old_key), new.compile(key)) else {
             continue;
         };
         if before.nodes == after.nodes {
@@ -1003,7 +1036,10 @@ fn const_users(old: &Snapshot, new: &Snapshot, changes: &mut Changes) {
             Ok(reload)
         });
         match reload {
-            Ok(reload) => changes.reloads.push(reload),
+            Ok(reload) => changes.reloads.push(ProcReload {
+                proc: old_key,
+                ..reload
+            }),
             Err(e) => changes.refused.push(format!("{key}: doesn't compile: {e}")),
         }
     }
@@ -1013,12 +1049,13 @@ fn const_users(old: &Snapshot, new: &Snapshot, changes: &mut Changes) {
 fn line_move(
     old: &Snapshot,
     new: &Snapshot,
+    old_key: &ProcKey,
     key: &ProcKey,
     old_value: &ProcValue,
     new_value: &ProcValue,
 ) -> Option<Vec<(u32, u32)>> {
     let mut lines = BTreeMap::new();
-    match (old.compile(key), new.compile(key)) {
+    match (old.compile(old_key), new.compile(key)) {
         (Ok(old_code), Ok(new_code)) => {
             let old_lines = dbg_lines(&old_code.nodes);
             let new_lines = dbg_lines(&new_code.nodes);
@@ -1408,33 +1445,66 @@ fn real(p: &dreammaker::objtree::TypeProc) -> Vec<&ProcValue> {
         .collect()
 }
 
-/// Whether a type's new definitions of a proc all come after the ones it had,
-/// so each definition it had keeps its number. Definitions are numbered in
-/// parse order, so a new one in a file of its own counts as after; one in the
-/// same file as an old one does when no old one's code changed.
-fn appended(
+/// Whether a type's definitions of a proc were only added or taken away at
+/// the end, so each one that stays keeps its number.
+fn at_the_end(
     old: &Snapshot,
     new: &Snapshot,
     old_values: &[&ProcValue],
     new_values: &[&ProcValue],
 ) -> bool {
-    let old_files: Vec<String> = old_values
-        .iter()
-        .map(|v| old.file_name(v.location.file))
-        .collect();
-    let new_files: Vec<String> = new_values
-        .iter()
-        .map(|v| new.file_name(v.location.file))
-        .collect();
-    let same_files = old_files.iter().zip(&new_files).all(|(a, b)| a == b);
-    let same_code = old_values
-        .iter()
-        .zip(new_values)
-        .all(|(a, b)| a.code == b.code && a.parameters == b.parameters);
-    let added_beside_old = new_files[old_files.len()..]
-        .iter()
-        .any(|f| old_files.contains(f));
-    same_files && (same_code || !added_beside_old)
+    let map = align(old, new, old_values, new_values);
+    let kept = old_values.len().min(new_values.len());
+    (0..kept).all(|i| map[i] == Some(i))
+}
+
+/// Which of a type's old definitions of a proc each new one is, `None` for
+/// one that's new: matched in order by the files they're in, and where a file
+/// has more than one, by their code.
+fn align(
+    old: &Snapshot,
+    new: &Snapshot,
+    old_values: &[&ProcValue],
+    new_values: &[&ProcValue],
+) -> Vec<Option<usize>> {
+    let (n, m) = (old_values.len(), new_values.len());
+    let weight = |i: usize, j: usize| -> u32 {
+        if old.file_name(old_values[i].location.file) != new.file_name(new_values[j].location.file)
+        {
+            0
+        } else if old_values[i].code == new_values[j].code {
+            3
+        } else {
+            2
+        }
+    };
+    // The heaviest common subsequence
+    let mut best = vec![vec![0u32; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            let mut b = best[i + 1][j].max(best[i][j + 1]);
+            let w = weight(i, j);
+            if w > 0 {
+                b = b.max(w + best[i + 1][j + 1]);
+            }
+            best[i][j] = b;
+        }
+    }
+    let mut map = vec![None; m];
+    let (mut i, mut j) = (0, 0);
+    while i < n && j < m {
+        let w = weight(i, j);
+        if w > 0 && best[i][j] == w + best[i + 1][j + 1] {
+            map[j] = Some(i);
+            i += 1;
+            j += 1;
+        } else if best[i][j] == best[i + 1][j] {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    map
 }
 
 /// Reports the definitions a type no longer has, when they're the last ones:
@@ -1456,7 +1526,7 @@ fn removed(
         ));
         return;
     }
-    if !appended(new, old, new_values, old_values) {
+    if !at_the_end(old, new, old_values, new_values) {
         changes.refused.push(format!(
             "{path}: a definition other than the last was removed, which would renumber the ones after it (remove the last first, or make it a change of its own)"
         ));
@@ -1633,6 +1703,7 @@ fn compare_types(
     old: &Snapshot,
     new: &Snapshot,
     changes: &mut Changes,
+    realigned: &mut Realigned,
 ) -> Vec<(ProcKey, String, String, bool, bool)> {
     let mut new_procs = vec![];
     let by_path = |s: &'_ Snapshot| -> BTreeMap<String, ()> {
@@ -1742,10 +1813,47 @@ fn compare_types(
             let new_values = real(proc);
             let (old_count, new_count) = (old_values.len(), new_values.len());
             let path = proc_path(n, name.as_str());
+            let verb = n
+                .get_proc_declaration(name.as_str())
+                .is_some_and(|d| d.kind == dreammaker::ast::ProcDeclKind::Verb);
+            // A type's procs can gain and lose definitions anywhere: the
+            // running world puts a new one where it goes among the others,
+            // and numbers them again. A verb's, the world's and a global
+            // proc's only at the end.
+            if new_count != old_count && !n.is_root() && !verb && n.get().path != "/world" {
+                let map = align(old, new, &old_values, &new_values);
+                for override_id in (0..old_count).filter(|i| !map.contains(&Some(*i))) {
+                    changes.removed_procs.push(RemovedProc {
+                        proc: ProcKey {
+                            path: path.clone(),
+                            override_id: override_id as u32,
+                        },
+                        type_path: n.get().path.clone(),
+                        name: name.as_str().to_owned(),
+                        verb: false,
+                    });
+                }
+                for (override_id, _) in map.iter().enumerate().filter(|(_, old)| old.is_none()) {
+                    new_procs.push((
+                        ProcKey {
+                            path: path.clone(),
+                            override_id: override_id as u32,
+                        },
+                        n.get().path.clone(),
+                        name.as_str().to_owned(),
+                        // One before the first the type had leaves that one
+                        // the declaration (`proc/`) it was made with
+                        override_id == 0 && proc.declaration.is_some() && old_count == 0,
+                        false,
+                    ));
+                }
+                realigned.insert(
+                    path,
+                    map.into_iter().map(|old| old.map(|i| i as u32)).collect(),
+                );
+                continue;
+            }
             if new_count > old_count {
-                let verb = n
-                    .get_proc_declaration(name.as_str())
-                    .is_some_and(|d| d.kind == dreammaker::ast::ProcDeclKind::Verb);
                 if n.is_root() && old_count > 0 {
                     // DreamMaker makes it a proc of its own (`/name`), and
                     // calls still go to the first
@@ -1753,7 +1861,7 @@ fn compare_types(
                         "{path}: another definition of a global proc, which calls don't reach (as in a build)"
                     ));
                 }
-                if !appended(old, new, &old_values, &new_values) {
+                if !at_the_end(old, new, &old_values, &new_values) {
                     changes.refused.push(format!(
                         "{path}: a new definition might come before one the type already has, which would renumber them (add it after the others, or make it a change of its own)"
                     ));

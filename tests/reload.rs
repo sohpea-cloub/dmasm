@@ -223,11 +223,6 @@ fn refuses_what_a_reload_cant_do() {
             "`set src` to something",
         ),
         (
-            "definition-before",
-            format!("/datum/thing/f(x)\n\treturn 2\n{base}"),
-            "might come before",
-        ),
-        (
             "parse-error",
             base.replace("return x", "return (x"),
             "parse error",
@@ -362,7 +357,7 @@ fn removed_procs_and_vars_stay() {
 }
 
 #[test]
-fn removed_overrides_are_unlinked_from_the_end_only() {
+fn removed_overrides_are_unlinked() {
     let before = "/datum/a/b\n\tvar/x = 1\n/datum/a/proc/f()\n\treturn 1\n/datum/a/b/f()\n\treturn 2\n/datum/a/b/f()\n\treturn 3\n/proc/g()\n\treturn 1\n";
     let changes = changes(
         "removed-last",
@@ -388,12 +383,20 @@ fn removed_overrides_are_unlinked_from_the_end_only() {
     assert!(changes.refused.is_empty(), "{:?}", changes.refused);
     assert_eq!(changes.removed_procs.len(), 2);
 
-    let refused = refusal(
+    // One before another: the world numbers what's left again
+    let changes = changes_of(
         "removed-first",
         before,
         &before.replace("/datum/a/b/f()\n\treturn 2\n", ""),
     );
-    assert!(refused.contains("other than the last"), "{}", refused);
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    let removed: Vec<ProcKey> = changes
+        .removed_procs
+        .iter()
+        .map(|r| r.proc.clone())
+        .collect();
+    assert_eq!(removed, [key("/datum/a/b/f", 0)]);
+    assert!(reloaded(&changes).is_empty(), "{:?}", reloaded(&changes));
 
     // A global proc's definitions aren't unlinked
     let changes = changes_of(
@@ -406,6 +409,75 @@ fn removed_overrides_are_unlinked_from_the_end_only() {
         .warnings
         .join("\n")
         .contains("/g: a definition was removed"));
+}
+
+#[test]
+fn definitions_come_among_the_others() {
+    let before =
+        "/datum/a/proc/f()\n\treturn 1\n/datum/a/f()\n\treturn 2\n/datum/a/f()\n\treturn 3\n";
+
+    // A new one between the first two: the others keep their (old) numbers
+    // in what the world is asked to change
+    let after = before.replace(
+        "/datum/a/f()\n\treturn 2\n",
+        "/datum/a/f()\n\treturn 9\n/datum/a/f()\n\treturn 2\n",
+    );
+    let changes = changes_of("inserted", before, &after);
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    let added: Vec<ProcKey> = changes
+        .new_procs
+        .iter()
+        .map(|p| p.code.proc.clone())
+        .collect();
+    assert_eq!(added, [key("/datum/a/f", 1)]);
+    assert!(changes.removed_procs.is_empty());
+    assert!(reloaded(&changes).is_empty(), "{:?}", reloaded(&changes));
+    let moved: Vec<ProcKey> = changes.line_moves.iter().map(|m| m.proc.clone()).collect();
+    assert_eq!(moved, [key("/datum/a/f", 1), key("/datum/a/f", 2)]);
+
+    // With a change to one after it, which the world knows by its old number
+    let changes = changes_of(
+        "inserted-and-changed",
+        before,
+        &after.replace("return 3", "return 4"),
+    );
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    let added: Vec<ProcKey> = changes
+        .new_procs
+        .iter()
+        .map(|p| p.code.proc.clone())
+        .collect();
+    assert_eq!(added, [key("/datum/a/f", 1)]);
+    assert_eq!(reloaded(&changes), [key("/datum/a/f", 2)]);
+
+    // One taken out and two added after the last reads as the cheaper edit:
+    // the later ones changed, and one more at the end
+    let after = before.replace("/datum/a/f()\n\treturn 2\n", "").replace(
+        "/datum/a/f()\n\treturn 3\n",
+        "/datum/a/f()\n\treturn 3\n/datum/a/f()\n\treturn 5\n/datum/a/f()\n\treturn 6\n",
+    );
+    let changes = changes_of("swapped", before, &after);
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    assert!(changes.removed_procs.is_empty());
+    let added: Vec<ProcKey> = changes
+        .new_procs
+        .iter()
+        .map(|p| p.code.proc.clone())
+        .collect();
+    assert_eq!(added, [key("/datum/a/f", 3)]);
+    assert_eq!(
+        reloaded(&changes),
+        [key("/datum/a/f", 1), key("/datum/a/f", 2)]
+    );
+
+    // A verb's only come and go at the end
+    let before = "/obj/verb/v()\n\treturn 1\n/obj/v()\n\treturn 2\n";
+    let refused = refusal(
+        "verb-between",
+        before,
+        &before.replace("/obj/v()", "/obj/v()\n\treturn 9\n/obj/v()"),
+    );
+    assert!(refused.contains("might come before"), "{}", refused);
 }
 
 #[test]
