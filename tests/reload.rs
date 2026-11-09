@@ -40,6 +40,11 @@ impl Drop for World {
     }
 }
 
+/// `changes`, for where a test has a binding of that name.
+fn changes_of(name: &str, before: &str, after: &str) -> Changes {
+    changes(name, before, after)
+}
+
 /// The changes from `before` to `after`, with code.dm as the edited file.
 fn changes(name: &str, before: &str, after: &str) -> Changes {
     let world = World::new(name, before);
@@ -284,12 +289,56 @@ fn removed_procs_and_vars_stay() {
     assert!(changes.refused.is_empty(), "{:?}", changes.refused);
     let warnings = changes.warnings.join("\n");
     assert!(warnings.contains("var a was removed"), "{}", warnings);
-    assert!(
-        warnings.contains("/datum/thing/f: the proc was removed"),
-        "{}",
-        warnings
-    );
+    assert_eq!(changes.removed_procs.len(), 1);
+    assert_eq!(changes.removed_procs[0].proc, key("/datum/thing/f", 0));
     assert_eq!(reloaded(&changes), [key("/g", 0)]);
+}
+
+#[test]
+fn removed_overrides_are_unlinked_from_the_end_only() {
+    let before = "/datum/a/b\n\tvar/x = 1\n/datum/a/proc/f()\n\treturn 1\n/datum/a/b/f()\n\treturn 2\n/datum/a/b/f()\n\treturn 3\n/proc/g()\n\treturn 1\n";
+    let changes = changes(
+        "removed-last",
+        before,
+        &before.replace("/datum/a/b/f()\n\treturn 3\n", ""),
+    );
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    let removed: Vec<(ProcKey, &str)> = changes
+        .removed_procs
+        .iter()
+        .map(|r| (r.proc.clone(), r.type_path.as_str()))
+        .collect();
+    assert_eq!(removed, [(key("/datum/a/b/f", 1), "/datum/a/b")]);
+
+    let changes = changes_of(
+        "removed-both",
+        before,
+        &before.replace(
+            "/datum/a/b/f()\n\treturn 2\n/datum/a/b/f()\n\treturn 3\n",
+            "",
+        ),
+    );
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    assert_eq!(changes.removed_procs.len(), 2);
+
+    let refused = refusal(
+        "removed-first",
+        before,
+        &before.replace("/datum/a/b/f()\n\treturn 2\n", ""),
+    );
+    assert!(refused.contains("other than the last"), "{}", refused);
+
+    // A global proc's definitions aren't unlinked
+    let changes = changes_of(
+        "removed-global",
+        before,
+        &before.replace("/proc/g()\n\treturn 1\n", ""),
+    );
+    assert!(changes.removed_procs.is_empty());
+    assert!(changes
+        .warnings
+        .join("\n")
+        .contains("/g: a definition was removed"));
 }
 
 #[test]

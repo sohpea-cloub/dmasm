@@ -189,6 +189,19 @@ pub struct NewProc {
     pub code: ProcReload,
 }
 
+/// A definition of a proc on a type that's gone from the source. It stays in
+/// the running world, but nothing should reach it: calls go to what it
+/// overrode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RemovedProc {
+    /// The definition as the running world knows it
+    pub proc: ProcKey,
+    pub type_path: String,
+    pub name: String,
+    pub verb: bool,
+}
+
 /// A constant value, as a var default can have.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -272,6 +285,9 @@ pub struct Changes {
     pub new_types: Vec<NewType>,
     pub reloads: Vec<ProcReload>,
     pub new_procs: Vec<NewProc>,
+    /// Definitions of procs on types that are gone. They come before new procs,
+    /// which can take their place.
+    pub removed_procs: Vec<RemovedProc>,
     /// New vars, which come before the var defaults: those can be for
     /// subtypes that override a new var.
     pub new_vars: Vec<NewVar>,
@@ -293,6 +309,7 @@ impl Changes {
         self.reloads.is_empty()
             && self.new_types.is_empty()
             && self.new_procs.is_empty()
+            && self.removed_procs.is_empty()
             && self.new_vars.is_empty()
             && self.var_defaults.is_empty()
             && self.init_procs.is_empty()
@@ -1095,6 +1112,47 @@ fn appended(
     same_files && (same_code || !added_beside_old)
 }
 
+/// Reports the definitions a type no longer has, when they're the last ones:
+/// one in the middle would renumber the rest. A global proc's are only warned
+/// about; nothing unlinks them.
+fn removed(
+    old: &Snapshot,
+    new: &Snapshot,
+    n: TypeRef,
+    name: &str,
+    old_values: &[&ProcValue],
+    new_values: &[&ProcValue],
+    changes: &mut Changes,
+) {
+    let path = proc_path(n, name);
+    if n.is_root() {
+        changes.warnings.push(format!(
+            "{path}: a definition was removed, and stays in the running world"
+        ));
+        return;
+    }
+    if !appended(new, old, new_values, old_values) {
+        changes.refused.push(format!(
+            "{path}: a definition other than the last was removed, which would renumber the ones after it (remove the last first, or make it a change of its own)"
+        ));
+        return;
+    }
+    for override_id in new_values.len()..old_values.len() {
+        changes.removed_procs.push(RemovedProc {
+            proc: ProcKey {
+                path: path.clone(),
+                override_id: override_id as u32,
+            },
+            type_path: n.get().path.clone(),
+            name: name.to_owned(),
+            verb: old
+                .find_type(&n.get().path)
+                .and_then(|o| o.get_proc_declaration(name))
+                .is_some_and(|d| d.kind == dreammaker::ast::ProcDeclKind::Verb),
+        });
+    }
+}
+
 /// Whether a type's var is one of BYOND's own.
 fn is_builtin(t: TypeRef, name: &str) -> bool {
     t.get_var_declaration(name)
@@ -1336,9 +1394,15 @@ fn compare_types(
                 }
                 continue;
             } else if new_count < old_count {
-                changes.warnings.push(format!(
-                    "{path}: a definition was removed, and stays in the running world"
-                ));
+                removed(
+                    old,
+                    new,
+                    n,
+                    name.as_str(),
+                    &old_values,
+                    &new_values,
+                    changes,
+                );
                 continue;
             }
             let declaration = |p: Option<&dreammaker::objtree::TypeProc>| {
@@ -1352,11 +1416,9 @@ fn compare_types(
             }
         }
         for name in op.keys().filter(|name| !np.contains_key(*name)) {
-            if !real(&op[name]).is_empty() {
-                changes.warnings.push(format!(
-                    "{}: the proc was removed, and stays in the running world",
-                    proc_path(n, name.as_str())
-                ));
+            let old_values = real(&op[name]);
+            if !old_values.is_empty() {
+                removed(old, new, n, name.as_str(), &old_values, &[], changes);
             }
         }
     }
