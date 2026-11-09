@@ -1592,12 +1592,13 @@ fn compare_types(
                     .get_proc_declaration(name.as_str())
                     .is_some_and(|d| d.kind == dreammaker::ast::ProcDeclKind::Verb);
                 if n.is_root() && old_count > 0 {
-                    // Calls to a global proc go to its last definition by id,
-                    // so callers would never reach the new one
-                    changes.refused.push(format!(
-                        "{path}: another definition of a global proc (code calling it wouldn't reach the new one)"
+                    // DreamMaker makes it a proc of its own (`/name`), and
+                    // calls still go to the first
+                    changes.warnings.push(format!(
+                        "{path}: another definition of a global proc, which calls don't reach (as in a build)"
                     ));
-                } else if !appended(old, new, &old_values, &new_values) {
+                }
+                if !appended(old, new, &old_values, &new_values) {
                     changes.refused.push(format!(
                         "{path}: a new definition might come before one the type already has, which would renumber them (add it after the others, or make it a change of its own)"
                     ));

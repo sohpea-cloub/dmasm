@@ -528,18 +528,28 @@ fn another_definition_after_the_others_is_a_new_proc() {
 }
 
 #[test]
-fn another_definition_of_a_global_proc_is_refused() {
+fn another_definition_of_a_global_proc_is_a_proc_of_its_own() {
     let before = "/proc/g()\n\treturn 1\n";
-    let refused = refusal(
+    let changes = changes(
         "global-redefinition",
         before,
-        &format!("{before}/proc/g()\n\treturn ..() + 1\n"),
+        &format!("{before}/g()\n\treturn ..() + 1\n"),
     );
-    // DreamMaker doesn't allow it either
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    let added: Vec<(ProcKey, &str, bool)> = changes
+        .new_procs
+        .iter()
+        .map(|p| (p.code.proc.clone(), p.type_path.as_str(), p.declared))
+        .collect();
+    assert_eq!(added, [(key("/g", 1), "", false)]);
+    // DreamMaker's calls go to the first definition
     assert!(
-        refused.contains("global proc") || refused.contains("duplicate definition"),
-        "{}",
-        refused
+        changes
+            .warnings
+            .iter()
+            .any(|w| w.contains("calls don't reach")),
+        "{:?}",
+        changes.warnings
     );
 }
 
