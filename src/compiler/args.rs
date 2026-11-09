@@ -62,6 +62,7 @@ fn has_assoc_argument(context: ArgsContext, args: &[Expression]) -> Result<bool,
     for arg in args {
         match context {
             // Proc arguments are only treated as associative if they contain an unwrapped assign operation where the LHS is not a nested expression
+            // (anything else is a key worked out: `f(a + 1 = 2)`)
             ArgsContext::Proc => {
                 if let Expression::AssignOp {
                     op: AssignOp::Assign,
@@ -69,16 +70,14 @@ fn has_assoc_argument(context: ArgsContext, args: &[Expression]) -> Result<bool,
                     rhs: _,
                 } = arg
                 {
-                    // BYOND's behavior for short-circuiting ops here is mad, so I'm going to error instead of matching it
-                    // TODO: Move to emit code?
+                    // `a?.b = x` is an assignment, as an argument like any other
                     if can_short_circuit(unroll(lhs)) {
-                        return Err(CompileError::AmbiguousListConstructor);
+                        continue;
                     }
 
-                    if let Expression::Base { term, follow: _ } = lhs.as_ref() {
-                        if !matches!(term.elem, Term::Expr(_)) {
-                            found_associative = true;
-                        }
+                    if !matches!(lhs.as_ref(), Expression::Base { term, .. } if matches!(term.elem, Term::Expr(_)))
+                    {
+                        found_associative = true;
                     }
                 }
             }
@@ -91,10 +90,9 @@ fn has_assoc_argument(context: ArgsContext, args: &[Expression]) -> Result<bool,
                     rhs: _,
                 } = unroll(arg)
                 {
-                    // BYOND's behavior for short-circuiting ops here is mad, so I'm going to error instead of matching it
-                    // TODO: Move to emit code?
+                    // `a?.b = x` is an assignment, as an argument like any other
                     if can_short_circuit(unroll(lhs)) {
-                        return Err(CompileError::AmbiguousListConstructor);
+                        continue;
                     }
 
                     // Finding an assign op means these args are associative

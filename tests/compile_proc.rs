@@ -433,3 +433,28 @@ fn missile_leaves_nothing() {
     let code = compile("/proc/f()\n\tvar/atom/a\n\tmissile(/obj, a, a)\n", "", "f");
     assert_has(&code, &["GetVar local(0)", "Missile", "End"]);
 }
+
+#[test]
+fn proc_argument_keys_worked_out() {
+    let src = "/proc/g(...)\n/proc/f()\n\tvar/a = 0\n\treturn g(a + 1 = 2, 7)\n";
+    let code = compile(src, "", "f");
+    assert_has(
+        &code,
+        &[
+            "Add",
+            "PushInt 2",
+            "PushInt 2",
+            "PushInt 7",
+            "NewAssocList 2",
+            "CallGlobalArgList /proc/g",
+        ],
+    );
+    // A safe access is an assignment, passed as it is
+    let src =
+        "/datum/t\n\tvar/b\n/proc/g(...)\n/proc/f()\n\tvar/datum/t/a = new\n\treturn g(a?.b = 1)\n";
+    let code = compile(src, "", "f");
+    assert_has(
+        &code,
+        &["SetVarExpr cache[\"b\"]", "LAB_0004:", "CallGlob 1 /proc/g"],
+    );
+}
