@@ -146,6 +146,8 @@ simple_stack_procs! {
     /proc/file2text(path) => Instruction::File2Text,
     /proc/findlasttext(haystack, needle, start = 0, end = 1) => Instruction::FindLastText,
     /proc/findlasttextEx(haystack, needle, start = 0, end = 1) => Instruction::FindLastTextEx,
+    /proc/findlasttext_char(haystack, needle, start = 0, end = 1) => Instruction::FindLastTextChar,
+    /proc/findlasttextEx_char(haystack, needle, start = 0, end = 1) => Instruction::FindLastTextExChar,
     /proc/findtext(haystack, needle, start = 1, end = null) => Instruction::FindText,
     /proc/findtext_char(haystack, needle, start = 1, end = null) => Instruction::FindTextChar,
     /proc/findtextEx(haystack, needle, start = 1, end = null) => Instruction::FindTextEx,
@@ -159,6 +161,7 @@ simple_stack_procs! {
     /proc/get_step_to(ref, target, min = null) => Instruction::GetStepTo,
     /proc/get_step_towards(ref, target) => Instruction::GetStepTowards,
     /proc/hascall(obj, proc_name) => Instruction::HasCall,
+    /proc/ispointer(val) => Instruction::IsPointer,
     /proc/hearers(depth = null, center = null) => Instruction::Hearers,
     /proc/html_decode(text) => Instruction::HtmlDecode,
     /proc/html_encode(text) => Instruction::HtmlEncode,
@@ -172,9 +175,11 @@ simple_stack_procs! {
     /proc/json_decode(json) => Instruction::JsonDecode,
     /proc/length(val) => Instruction::Length,
     /proc/length_char(val) => Instruction::LengthChar,
+    /proc/load_ext(library, function) => Instruction::LoadExt,
     /proc/lentext(text) => Instruction::Length,
     /proc/list2params(list) => Instruction::List2Params,
     /proc/lowertext(text) => Instruction::LowerText,
+    /proc/missile(type, start, end) => Instruction::Missile,
     /proc/md5(text) => Instruction::Md5,
     /proc/nonspantext(haystack, needles, start = 1) => Instruction::NonSpanText,
     /proc/nonspantext_char(haystack, needles, start = 1) => Instruction::NonSpanTextChar,
@@ -321,9 +326,6 @@ unsupported_procs! {
 
     // Overloaded Procs
     /proc/shutdown,
-
-    // Snowflake procs
-    /proc/cmptextEx,
 
     // Not actually procs
     /proc/browse,
@@ -765,9 +767,26 @@ fn emit_overloaded(
             compiler.emit_ins(ins);
             compiler.emit_ins(Instruction::GetFlag);
         }
-        "cmptext" if n == 2 => {
-            push_args(compiler, args)?;
-            compiler.emit_ins(Instruction::CmpText);
+        // cmptext(a, b, ...) is true when every argument after the first is
+        // the first's text: cmptextEx's case and all
+        "cmptext" | "cmptextEx" if n >= 2 => {
+            let compare = if name == "cmptext" {
+                Instruction::CmpText
+            } else {
+                Instruction::Teq
+            };
+            let end = compiler.new_label();
+            push_args(compiler, &args[..1])?;
+            for (i, arg) in args[1..].iter().enumerate() {
+                if i > 0 {
+                    compiler.emit_ins(Instruction::Jz(Label::Named(end.clone())));
+                }
+                push_args(compiler, std::slice::from_ref(arg))?;
+                compiler.emit_ins(compare.clone());
+            }
+            if n > 2 {
+                compiler.emit_label(end);
+            }
             compiler.emit_ins(Instruction::Pop);
             compiler.emit_ins(Instruction::GetFlag);
         }

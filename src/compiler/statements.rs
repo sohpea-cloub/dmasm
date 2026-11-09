@@ -1763,7 +1763,13 @@ fn emit_expr_statement_inner(compiler: &mut Compiler, expr: &Expression) -> Resu
                     *ins = Instruction::CallStatement(var, count);
                 }
             }
-            compiler.emit_ins(Instruction::Pop);
+            // missile() leaves nothing (and can't be a value)
+            if !matches!(
+                compiler.nodes.last(),
+                Some(Node::Instruction(Instruction::Missile, _))
+            ) {
+                compiler.emit_ins(Instruction::Pop);
+            }
             Ok(())
         }
     }

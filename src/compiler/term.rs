@@ -479,11 +479,23 @@ pub(super) fn emit(compiler: &mut Compiler<'_>, term: Term) -> Result<EvalKind, 
             function,
             args,
         } => {
-            // TODO: call_ext(handle)() without a library name
+            // call_ext(handle)(), with what load_ext() returned
             let Some(library) = library else {
-                return Err(CompileError::UnsupportedBuiltin {
-                    proc: "call_ext".to_owned(),
-                });
+                let kind = compiler.emit_expr(*function)?;
+                compiler.emit_move_to_stack(kind)?;
+                let args = args.into_vec();
+                let count = args.len() as u32;
+                return match args::emit(compiler, args::ArgsContext::Proc, args)? {
+                    args::ArgsResult::Normal => {
+                        compiler.emit_ins(Instruction::CallExtLoaded(count));
+                        Ok(EvalKind::Stack)
+                    }
+                    args::ArgsResult::ArgList => {
+                        compiler.emit_ins(Instruction::CallExtLoadedArgList);
+                        Ok(EvalKind::Stack)
+                    }
+                    args::ArgsResult::Assoc => Err(CompileError::UnexpectedNamedArguments),
+                };
             };
             for part in [*library, *function] {
                 let kind = compiler.emit_expr(part)?;

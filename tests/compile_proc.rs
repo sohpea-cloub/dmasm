@@ -380,3 +380,56 @@ fn bit_ops_fold_like_dreammaker() {
         ],
     );
 }
+
+#[test]
+fn cmptext_with_more_than_two() {
+    let code = compile(
+        "/proc/f()\n\treturn cmptextEx(\"a\", \"A\", \"b\")\n",
+        "",
+        "f",
+    );
+    assert_has(
+        &code,
+        &[
+            "PushVal \"a\"",
+            "PushVal \"A\"",
+            "Teq",
+            "Jz LAB_0001",
+            "PushVal \"b\"",
+            "Teq",
+            "LAB_0001:",
+            "Pop",
+            "GetFlag",
+        ],
+    );
+    let code = compile("/proc/f(a)\n\treturn cmptext(a, \"A\", \"b\")\n", "", "f");
+    assert_has(
+        &code,
+        &["CmpText", "Jz LAB_0001", "PushVal \"b\"", "CmpText"],
+    );
+}
+
+#[test]
+fn call_ext_of_a_loaded_function() {
+    let src = "/proc/f()\n\tvar/h = load_ext(\"lib.so\", \"func\")\n\treturn call_ext(h)(1, 2)\n";
+    let code = compile(src, "", "f");
+    assert_has(
+        &code,
+        &["PushVal \"lib.so\"", "PushVal \"func\"", "LoadExt"],
+    );
+    assert_has(
+        &code,
+        &[
+            "GetVar local(0)",
+            "PushInt 1",
+            "PushInt 2",
+            "CallExtLoaded 2",
+        ],
+    );
+}
+
+#[test]
+fn missile_leaves_nothing() {
+    let code = compile("/proc/f()\n\tvar/atom/a\n\tmissile(/obj, a, a)\n", "", "f");
+    assert_has(&code, &["GetVar local(0)", "Missile", "End"]);
+}
