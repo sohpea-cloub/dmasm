@@ -151,6 +151,25 @@ fn a_const_change_recompiles_its_users() {
 }
 
 #[test]
+fn a_var_declared_with_another_type_recompiles_its_users() {
+    let before = "/datum/holder\n\tvar/list/items = null\n/datum/holder/proc/count()\n\treturn items.len\n/datum/holder/proc/other()\n\treturn 1\n";
+    let after = before.replace("var/list/items", "var/items");
+    let changes = changes("retyped", before, &after);
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    assert_eq!(changes.retyped, ["items"]);
+    // Whatever count compiles to now, other is left alone
+    assert!(!reloaded(&changes).contains(&key("/datum/holder/other", 0)));
+
+    // How it's stored can't change
+    let refused = refusal(
+        "retyped-tmp",
+        "/datum/holder\n\tvar/items = 1\n",
+        "/datum/holder\n\tvar/tmp/items = 1\n",
+    );
+    assert!(refused.contains("declaration changed"), "{}", refused);
+}
+
+#[test]
 fn spaceman_dmm_is_not_defined() {
     let code = |n: u32| {
         format!("/proc/a()\n#ifdef SPACEMAN_DMM\n\treturn 0\n#else\n\treturn {n}\n#endif\n")

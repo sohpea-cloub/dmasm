@@ -393,6 +393,10 @@ pub struct Changes {
     /// The consts of types whose values changed. The procs whose code changes
     /// with them are among the reloads.
     pub consts: Vec<String>,
+    /// Vars declared with another type now (or SpacemanDMM's checks), which
+    /// only matters to the code that uses them: those procs whose code
+    /// changes are among the reloads.
+    pub retyped: Vec<String>,
     /// Types whose init proc (which sets the vars whose defaults aren't
     /// constants on each new instance) changed.
     pub init_procs: Vec<InitProc>,
@@ -939,16 +943,21 @@ pub fn diff(old: &Snapshot, new: &Snapshot, changed_files: Option<&HashSet<PathB
     changes
 }
 
-/// The procs whose code changes with the consts whose values did, which the
-/// code they're compiled into doesn't show: those that name one, and compile
-/// to something else now.
+/// The procs whose code changes with the consts whose values did, or the
+/// vars whose declared types did, which their own code doesn't show: those
+/// that name one, and compile to something else now.
 fn const_users(old: &Snapshot, new: &Snapshot, changes: &mut Changes) {
-    if changes.consts.is_empty() {
+    if changes.consts.is_empty() && changes.retyped.is_empty() {
         return;
     }
     // A name in the syntax tree shows in its debug text, as an identifier,
     // a field or a string: a cheap way to rule out the rest
-    let names: Vec<String> = changes.consts.iter().map(|c| format!("{c:?}")).collect();
+    let names: Vec<String> = changes
+        .consts
+        .iter()
+        .chain(&changes.retyped)
+        .map(|c| format!("{c:?}"))
+        .collect();
     let reloaded: HashSet<ProcKey> = changes
         .reloads
         .iter()
@@ -1667,9 +1676,30 @@ fn compare_types(
                 // Overriding an inherited var, which it didn't before
                 None => var_default(old, new, path, name.as_str(), false, changes),
                 Some(old_var) if declaration(old_var) != declaration(var) => {
-                    changes
-                        .refused
-                        .push(format!("{shown}: var {name}'s declaration changed"));
+                    // Its type, and SpacemanDMM's checks, are only for
+                    // compiling: the code that uses it is compiled again
+                    let storage = |v: &dreammaker::objtree::TypeVar| {
+                        v.declaration.as_ref().map(|d| {
+                            (
+                                d.var_type.flags.is_static(),
+                                d.var_type.flags.is_const(),
+                                d.var_type.flags.is_tmp(),
+                                d.var_type.input_type,
+                            )
+                        })
+                    };
+                    if storage(old_var) != storage(var) {
+                        changes.refused.push(format!(
+                            "{shown}: var {name}'s declaration changed (static, const, tmp or `as`)"
+                        ));
+                    } else {
+                        if !changes.retyped.iter().any(|r| r == name.as_str()) {
+                            changes.retyped.push(name.to_string());
+                        }
+                        if old_var.value.expression != var.value.expression {
+                            var_default(old, new, path, name.as_str(), false, changes);
+                        }
+                    }
                 }
                 Some(old_var) if old_var.value.expression != var.value.expression => {
                     var_default(old, new, path, name.as_str(), false, changes);
