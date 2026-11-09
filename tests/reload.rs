@@ -398,13 +398,18 @@ fn removed_overrides_are_unlinked() {
     assert_eq!(removed, [key("/datum/a/b/f", 0)]);
     assert!(reloaded(&changes).is_empty(), "{:?}", reloaded(&changes));
 
-    // A global proc's definitions aren't unlinked
+    // A global proc's definitions are only taken out of the numbering
     let changes = changes_of(
         "removed-global",
         before,
         &before.replace("/proc/g()\n\treturn 1\n", ""),
     );
-    assert!(changes.removed_procs.is_empty());
+    let removed: Vec<(ProcKey, &str)> = changes
+        .removed_procs
+        .iter()
+        .map(|r| (r.proc.clone(), r.type_path.as_str()))
+        .collect();
+    assert_eq!(removed, [(key("/g", 0), "")]);
     assert!(changes
         .warnings
         .join("\n")
@@ -470,14 +475,65 @@ fn definitions_come_among_the_others() {
         [key("/datum/a/f", 1), key("/datum/a/f", 2)]
     );
 
-    // A verb's only come and go at the end
-    let before = "/obj/verb/v()\n\treturn 1\n/obj/v()\n\treturn 2\n";
-    let refused = refusal(
-        "verb-between",
-        before,
-        &before.replace("/obj/v()", "/obj/v()\n\treturn 9\n/obj/v()"),
-    );
-    assert!(refused.contains("might come before"), "{}", refused);
+    // A verb's, the world's and a global proc's too
+    let cases = [
+        (
+            "verb-between",
+            "/obj/verb/v()\n\treturn 1\n/obj/v()\n\treturn 2\n",
+            "/obj/v()",
+            "/obj/v",
+            true,
+        ),
+        (
+            "world-between",
+            "/world/New()\n\treturn 1\n/world/New()\n\treturn 2\n",
+            "/world/New()",
+            "/world/New",
+            false,
+        ),
+        (
+            "global-between",
+            "/proc/g()\n\treturn 1\n/g()\n\treturn 2\n",
+            "/g()",
+            "/g",
+            false,
+        ),
+    ];
+    for (name, before, head, path, verb) in cases {
+        // One between the two, then taken away again
+        let second = format!("{head}\n\treturn 2\n");
+        let after = before.replace(&second, &format!("{head}\n\treturn 9\n{second}"));
+        let changes = changes_of(name, before, &after);
+        assert!(
+            changes.refused.is_empty(),
+            "{}: {:?}",
+            name,
+            changes.refused
+        );
+        let added: Vec<(ProcKey, bool, bool)> = changes
+            .new_procs
+            .iter()
+            .map(|p| (p.code.proc.clone(), p.declared, p.verb))
+            .collect();
+        assert_eq!(added, [(key(path, 1), false, verb)], "{}", name);
+        assert!(reloaded(&changes).is_empty(), "{}", name);
+
+        let changes = changes_of(
+            name,
+            &after,
+            &after.replacen("\treturn 9\n", "\treturn 9\n\treturn 8\n", 1),
+        );
+        assert_eq!(reloaded(&changes), [key(path, 1)], "{}", name);
+
+        let changes = changes_of(name, &after, before);
+        let removed: Vec<(ProcKey, bool)> = changes
+            .removed_procs
+            .iter()
+            .map(|r| (r.proc.clone(), r.verb))
+            .collect();
+        assert_eq!(removed, [(key(path, 1), verb)], "{}", name);
+        assert!(reloaded(&changes).is_empty(), "{}", name);
+    }
 }
 
 #[test]

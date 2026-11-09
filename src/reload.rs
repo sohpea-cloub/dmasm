@@ -283,9 +283,10 @@ pub struct NewProc {
     pub code: ProcReload,
 }
 
-/// A definition of a proc on a type that's gone from the source. It stays in
-/// the running world, but nothing should reach it: calls go to what it
-/// overrode.
+/// A definition of a proc that's gone from the source. It stays in the
+/// running world, but nothing should reach it: calls go to what it overrode.
+/// A global proc's (`type_path` `""`) is only left out of the numbering, as
+/// code that wasn't reloaded can still call it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RemovedProc {
@@ -1764,19 +1765,6 @@ fn real(p: &dreammaker::objtree::TypeProc) -> Vec<&ProcValue> {
         .collect()
 }
 
-/// Whether a type's definitions of a proc were only added or taken away at
-/// the end, so each one that stays keeps its number.
-fn at_the_end(
-    old: &Snapshot,
-    new: &Snapshot,
-    old_values: &[&ProcValue],
-    new_values: &[&ProcValue],
-) -> bool {
-    let map = align(old, new, old_values, new_values);
-    let kept = old_values.len().min(new_values.len());
-    (0..kept).all(|i| map[i] == Some(i))
-}
-
 /// Which of a type's old definitions of a proc each new one is, `None` for
 /// one that's new: matched in order by the files they're in, and where a file
 /// has more than one, by their code.
@@ -1826,16 +1814,14 @@ fn align(
     map
 }
 
-/// Reports the definitions a type no longer has, when they're the last ones:
-/// one in the middle would renumber the rest. A global proc's are only warned
-/// about; nothing unlinks them.
+/// Reports the definitions of a proc a type no longer has, all of them. A
+/// global proc's stay where old code calls them, and are only taken out of
+/// the numbering.
 fn removed(
     old: &Snapshot,
-    new: &Snapshot,
     n: TypeRef,
     name: &str,
     old_values: &[&ProcValue],
-    new_values: &[&ProcValue],
     changes: &mut Changes,
 ) {
     let path = proc_path(n, name);
@@ -1843,15 +1829,12 @@ fn removed(
         changes.warnings.push(format!(
             "{path}: a definition was removed, and stays in the running world"
         ));
-        return;
     }
-    if !at_the_end(old, new, old_values, new_values) {
-        changes.refused.push(format!(
-            "{path}: a definition other than the last was removed, which would renumber the ones after it (remove the last first, or make it a change of its own)"
-        ));
-        return;
-    }
-    for override_id in new_values.len()..old_values.len() {
+    let verb = old
+        .find_type(&n.get().path)
+        .and_then(|o| o.get_proc_declaration(name))
+        .is_some_and(|d| d.kind == dreammaker::ast::ProcDeclKind::Verb);
+    for override_id in 0..old_values.len() {
         changes.removed_procs.push(RemovedProc {
             proc: ProcKey {
                 path: path.clone(),
@@ -1859,10 +1842,7 @@ fn removed(
             },
             type_path: n.get().path.clone(),
             name: name.to_owned(),
-            verb: old
-                .find_type(&n.get().path)
-                .and_then(|o| o.get_proc_declaration(name))
-                .is_some_and(|d| d.kind == dreammaker::ast::ProcDeclKind::Verb),
+            verb,
         });
     }
 }
@@ -2135,13 +2115,16 @@ fn compare_types(
             let verb = n
                 .get_proc_declaration(name.as_str())
                 .is_some_and(|d| d.kind == dreammaker::ast::ProcDeclKind::Verb);
-            // A type's procs can gain and lose definitions anywhere: the
-            // running world puts a new one where it goes among the others,
-            // and numbers them again. A verb's, the world's and a global
-            // proc's only at the end.
-            if new_count != old_count && !n.is_root() && !verb && n.get().path != "/world" {
+            // Definitions can come and go anywhere: the running world puts a
+            // new one where it goes among the others, and numbers them again
+            if new_count != old_count {
                 let map = align(old, new, &old_values, &new_values);
                 for override_id in (0..old_count).filter(|i| !map.contains(&Some(*i))) {
+                    if n.is_root() {
+                        changes.warnings.push(format!(
+                            "{path}: a definition was removed, and stays in the running world"
+                        ));
+                    }
                     changes.removed_procs.push(RemovedProc {
                         proc: ProcKey {
                             path: path.clone(),
@@ -2149,10 +2132,20 @@ fn compare_types(
                         },
                         type_path: n.get().path.clone(),
                         name: name.as_str().to_owned(),
-                        verb: false,
+                        verb,
                     });
                 }
                 for (override_id, _) in map.iter().enumerate().filter(|(_, old)| old.is_none()) {
+                    // One before the first the type had leaves that one the
+                    // declaration (`proc/`) it was made with
+                    let declared = override_id == 0 && proc.declaration.is_some() && old_count == 0;
+                    if n.is_root() && !declared {
+                        // DreamMaker makes it a proc of its own (`/name`), and
+                        // calls still go to the declared one
+                        changes.warnings.push(format!(
+                            "{path}: another definition of a global proc, which calls don't reach (as in a build)"
+                        ));
+                    }
                     new_procs.push((
                         ProcKey {
                             path: path.clone(),
@@ -2160,55 +2153,13 @@ fn compare_types(
                         },
                         n.get().path.clone(),
                         name.as_str().to_owned(),
-                        // One before the first the type had leaves that one
-                        // the declaration (`proc/`) it was made with
-                        override_id == 0 && proc.declaration.is_some() && old_count == 0,
-                        false,
+                        declared,
+                        verb,
                     ));
                 }
                 realigned.insert(
                     path,
                     map.into_iter().map(|old| old.map(|i| i as u32)).collect(),
-                );
-                continue;
-            }
-            if new_count > old_count {
-                if n.is_root() && old_count > 0 {
-                    // DreamMaker makes it a proc of its own (`/name`), and
-                    // calls still go to the first
-                    changes.warnings.push(format!(
-                        "{path}: another definition of a global proc, which calls don't reach (as in a build)"
-                    ));
-                }
-                if !at_the_end(old, new, &old_values, &new_values) {
-                    changes.refused.push(format!(
-                        "{path}: a new definition might come before one the type already has, which would renumber them (add it after the others, or make it a change of its own)"
-                    ));
-                } else {
-                    for override_id in old_count..new_count {
-                        let key = ProcKey {
-                            path: path.clone(),
-                            override_id: override_id as u32,
-                        };
-                        new_procs.push((
-                            key,
-                            n.get().path.clone(),
-                            name.as_str().to_owned(),
-                            override_id == 0 && proc.declaration.is_some(),
-                            verb,
-                        ));
-                    }
-                }
-                continue;
-            } else if new_count < old_count {
-                removed(
-                    old,
-                    new,
-                    n,
-                    name.as_str(),
-                    &old_values,
-                    &new_values,
-                    changes,
                 );
                 continue;
             }
@@ -2225,7 +2176,7 @@ fn compare_types(
         for name in op.keys().filter(|name| !np.contains_key(*name)) {
             let old_values = real(&op[name]);
             if !old_values.is_empty() {
-                removed(old, new, n, name.as_str(), &old_values, &[], changes);
+                removed(old, n, name.as_str(), &old_values, changes);
             }
         }
     }
