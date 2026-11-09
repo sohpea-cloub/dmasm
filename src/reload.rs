@@ -387,6 +387,9 @@ pub struct Changes {
     /// subtypes that override a new var.
     pub new_vars: Vec<NewVar>,
     pub var_defaults: Vec<VarDefault>,
+    /// New defaults of built-in vars (`name`, `icon_state`, `pixel_x`, ...),
+    /// which types keep in their records rather than var tables
+    pub builtin_defaults: Vec<VarDefault>,
     /// Types whose init proc (which sets the vars whose defaults aren't
     /// constants on each new instance) changed.
     pub init_procs: Vec<InitProc>,
@@ -408,6 +411,7 @@ impl Changes {
             && self.removed_procs.is_empty()
             && self.new_vars.is_empty()
             && self.var_defaults.is_empty()
+            && self.builtin_defaults.is_empty()
             && self.init_procs.is_empty()
             && self.line_moves.is_empty()
             && self.refused.is_empty()
@@ -1422,21 +1426,64 @@ fn sets_builtin(t: TypeRef, name: &str) -> bool {
     false
 }
 
+/// The built-in vars whose constant values a reload can set on a type: the
+/// fields of its record, and those it lists with their values.
+const BUILTIN_VARS: &[&str] = &[
+    // Fields
+    "name",
+    "desc",
+    "icon",
+    "icon_state",
+    "text",
+    "suffix",
+    "dir",
+    "layer",
+    "maptext",
+    "maptext_x",
+    "maptext_y",
+    "maptext_width",
+    "maptext_height",
+    // Flags
+    "density",
+    "opacity",
+    "gender",
+    "mouse_drop_zone",
+    "mouse_opacity",
+    "animate_movement",
+    "appearance_flags",
+    // Listed
+    "alpha",
+    "blend_mode",
+    "color",
+    "invisibility",
+    "infra_luminosity",
+    "luminosity",
+    "pixel_x",
+    "pixel_y",
+    "pixel_w",
+    "pixel_z",
+    "plane",
+    "render_source",
+    "render_target",
+    "bound_x",
+    "bound_y",
+    "bound_width",
+    "bound_height",
+    "step_size",
+    "step_x",
+    "step_y",
+    "glide_size",
+    "screen_loc",
+    "vis_flags",
+    "mouse_drag_pointer",
+    "mouse_drop_pointer",
+    "mouse_over_pointer",
+    "override",
+];
+
 /// Reports a type the running world doesn't have, with the fields of its
 /// record that aren't its parent's, as DreamMaker works them out.
 fn new_type(n: TypeRef, changes: &mut Changes) {
-    const FIELDS: &[&str] = &[
-        "name",
-        "desc",
-        "icon",
-        "icon_state",
-        "text",
-        "suffix",
-        "dir",
-        "layer",
-        "density",
-        "opacity",
-    ];
     let path = n.get().path.clone();
     let Some(parent) = n.parent_type() else {
         changes
@@ -1465,22 +1512,18 @@ fn new_type(n: TypeRef, changes: &mut Changes) {
         if name == "parent_type" {
             continue;
         }
-        if !FIELDS.contains(&name) {
+        // One that isn't a constant is set by the type's init proc
+        let Some(value) = var_constant(var) else {
+            continue;
+        };
+        if !BUILTIN_VARS.contains(&name) {
             changes.refused.push(format!(
-                "{path}: sets {name}, a built-in var a new type can't set yet"
+                "{path}: sets {name}, a built-in var a reload can't set yet"
             ));
             refused = true;
             continue;
         }
-        match var_constant(var) {
-            Some(value) => fields.push((name.to_owned(), value)),
-            None => {
-                changes.refused.push(format!(
-                    "{path}: sets {name} to something other than a constant"
-                ));
-                refused = true;
-            }
-        }
+        fields.push((name.to_owned(), value));
     }
     if refused {
         return;
@@ -1802,12 +1845,7 @@ fn var_default(
         return;
     };
     let flags = declaration.get().var_type.flags;
-    if declaration.get().location.file == FileId::BUILTINS {
-        changes.refused.push(format!(
-            "{shown}: {name} is one of BYOND's own vars, and a new default for it needs a rebuild"
-        ));
-        return;
-    }
+    let builtin = declaration.get().location.file == FileId::BUILTINS;
     // A new var starts with its value; an existing global keeps the one it
     // has now
     if n.is_root() || flags.is_static() {
@@ -1828,7 +1866,7 @@ fn var_default(
     // A default that isn't a constant is set by the init procs, which
     // instances that exist already have run
     let Some(Some(value)) = default_value(n, name) else {
-        if !is_new {
+        if !is_new && !builtin {
             changes.warnings.push(format!(
                 "{shown}: var {name}'s default isn't a constant, so only new instances get it"
             ));
@@ -1859,6 +1897,23 @@ fn var_default(
                 None => break,
             }
         }
+    }
+    if builtin {
+        if !BUILTIN_VARS.contains(&name) {
+            changes.refused.push(format!(
+                "{shown}: {name} is one of BYOND's own vars, and a new default for it needs a rebuild"
+            ));
+            return;
+        }
+        changes.warnings.push(format!(
+            "{shown}: {name} is a built-in var, so only new instances get its new default"
+        ));
+        changes.builtin_defaults.push(VarDefault {
+            var: name.to_owned(),
+            value,
+            types,
+        });
+        return;
     }
     changes.var_defaults.push(VarDefault {
         var: name.to_owned(),

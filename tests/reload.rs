@@ -170,8 +170,8 @@ fn refuses_what_a_reload_cant_do() {
         ),
         (
             "new-type-builtin",
-            format!("{base}/obj/other\n\tpixel_x = 3\n"),
-            "sets pixel_x",
+            format!("{base}/obj/other\n\ttag = \"t\"\n"),
+            "sets tag",
         ),
         (
             "var-decl",
@@ -210,9 +210,50 @@ fn refuses_what_a_reload_cant_do() {
 }
 
 #[test]
-fn a_new_default_for_a_builtin_var_is_refused() {
-    let before = "/obj/thing\n\tname = \"a\"\n";
-    let refused = refusal("builtin", before, &before.replace("\"a\"", "\"b\""));
+fn builtin_var_defaults() {
+    let before = "/obj/thing\n\tname = \"a\"\n/obj/thing/sub\n/obj/thing/own\n\tpixel_x = 2\n";
+    let after = before.replace("\"a\"", "\"b\"").replace(
+        "/obj/thing\n",
+        "/obj/thing\n\tpixel_x = 5\n\tgender = \"male\"\n",
+    );
+    let changes = changes("builtin", before, &after);
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    let mut defaults: Vec<(String, ConstValue, Vec<String>)> = changes
+        .builtin_defaults
+        .iter()
+        .map(|d| (d.var.clone(), d.value.clone(), d.types.clone()))
+        .collect();
+    defaults.sort_by(|a, b| a.0.cmp(&b.0));
+    let both = vec!["/obj/thing".to_owned(), "/obj/thing/sub".to_owned()];
+    let all = vec![
+        "/obj/thing".to_owned(),
+        "/obj/thing/own".to_owned(),
+        "/obj/thing/sub".to_owned(),
+    ];
+    let sorted = |mut v: Vec<String>| {
+        v.sort();
+        v
+    };
+    let defaults: Vec<_> = defaults
+        .into_iter()
+        .map(|(var, value, types)| (var, value, sorted(types)))
+        .collect();
+    assert_eq!(
+        defaults,
+        [
+            (
+                "gender".to_owned(),
+                ConstValue::String("male".to_owned()),
+                all.clone()
+            ),
+            ("name".to_owned(), ConstValue::String("b".to_owned()), all),
+            ("pixel_x".to_owned(), ConstValue::Number(5.0), both),
+        ]
+    );
+    assert!(changes.var_defaults.is_empty());
+
+    // Ones a reload can't set
+    let refused = refusal("builtin-mob", "/mob/a\n", "/mob/a\n\tckey = \"someone\"\n");
     assert!(refused.contains("BYOND's own vars"), "{}", refused);
 }
 
