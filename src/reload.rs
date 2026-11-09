@@ -81,7 +81,7 @@ pub struct StaticVar {
 }
 
 /// A parameter as BYOND keeps it for a proc.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Param {
     pub name: String,
@@ -95,7 +95,7 @@ pub struct Param {
 }
 
 /// A parameter's `in` list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum InList {
     /// A source BYOND has built in, as the word it keeps for it: the kind
@@ -106,6 +106,9 @@ pub enum InList {
     /// A list expression, the one the running proc's parameter of this name
     /// has (DreamMaker compiles each into a proc of its own).
     Kept,
+    /// A list expression the running proc doesn't have: the code of the proc
+    /// that returns the list, evaluated on the proc's type.
+    New(Box<ProcReload>),
 }
 
 /// The word BYOND keeps for an `in` list it has built in.
@@ -568,6 +571,38 @@ impl Snapshot {
         })
     }
 
+    /// Compiles the `in` list expressions of a proc's parameters that `new`
+    /// says are new, into procs of their own as DreamMaker does.
+    fn compile_in_lists(
+        &self,
+        key: &ProcKey,
+        reload: &mut ProcReload,
+        new: impl Fn(&str, &dreammaker::ast::Expression) -> bool,
+    ) -> Result<(), String> {
+        let (ty, value) = self.find(key).ok_or_else(|| format!("no proc {key}"))?;
+        for param in reload.params.iter_mut() {
+            if param.in_list != InList::Kept {
+                continue;
+            }
+            let Some(expression) = value
+                .parameters
+                .iter()
+                .find(|p| p.name.as_str() == param.name)
+                .and_then(|p| p.in_list.as_ref())
+            else {
+                continue;
+            };
+            if new(&param.name, expression) {
+                let location = value_location(expression, value.location);
+                let code = self
+                    .compile_value(ty, expression, "", location)
+                    .map_err(|e| format!("parameter {}'s `in` list: {e}", param.name))?;
+                param.in_list = InList::New(Box::new(code));
+            }
+        }
+        Ok(())
+    }
+
     /// Compiles code that returns `expression`, evaluated on `ty` (the root
     /// type for a global): how a global or static var gets a value that isn't
     /// a constant.
@@ -798,12 +833,11 @@ pub fn diff(old: &Snapshot, new: &Snapshot, changed_files: Option<&HashSet<PathB
     changes.new_types.sort_by_cached_key(|t| depth(&t.path));
     compare_inits(old, new, &mut changes);
     for (key, type_path, name, declared, verb) in new_procs {
-        match new.compile_reload(&key) {
-            Ok(code) if code.params.iter().any(|p| p.in_list == InList::Kept) => {
-                changes.refused.push(format!(
-                    "{key}: new, with an `in` list expression, which a reload can't make yet"
-                ))
-            }
+        let code = new.compile_reload(&key).and_then(|mut code| {
+            new.compile_in_lists(&key, &mut code, |_, _| true)?;
+            Ok(code)
+        });
+        match code {
             Ok(code) => changes.new_procs.push(NewProc {
                 type_path,
                 name,
@@ -828,11 +862,6 @@ pub fn diff(old: &Snapshot, new: &Snapshot, changed_files: Option<&HashSet<PathB
             // New and removed procs were refused with the types
             continue;
         };
-
-        if let Some(why) = signature_change(old_value, new_value) {
-            changes.refused.push(format!("{key}: {why}"));
-            continue;
-        }
 
         let moved_file =
             old.file_name(old_value.location.file) != new.file_name(new_value.location.file);
@@ -863,7 +892,20 @@ pub fn diff(old: &Snapshot, new: &Snapshot, changed_files: Option<&HashSet<PathB
             || params_changed
             || moved_file
         {
-            match new.compile_code(key) {
+            // An `in` list expression the parameter didn't have
+            let new_list = |name: &str, expression: &dreammaker::ast::Expression| {
+                old_value
+                    .parameters
+                    .iter()
+                    .find(|p| p.name.as_str() == name)
+                    .and_then(|p| p.in_list.as_ref())
+                    != Some(expression)
+            };
+            let reload = new.compile_code(key).and_then(|mut reload| {
+                new.compile_in_lists(key, &mut reload, new_list)?;
+                Ok(reload)
+            });
+            match reload {
                 Ok(reload) => changes.reloads.push(ProcReload { settings, ..reload }),
                 Err(e) => changes.refused.push(format!("{key}: doesn't compile: {e}")),
             }
@@ -935,25 +977,6 @@ fn dbg_lines(nodes: &[Node]) -> Vec<u32> {
             _ => None,
         })
         .collect()
-}
-
-/// What changed about a proc that a reload can't change: an `in` list
-/// expression on a parameter.
-fn signature_change(old: &ProcValue, new: &ProcValue) -> Option<String> {
-    // A list expression is compiled into a proc of its own, which a reload
-    // can't make yet: it can only keep the one the parameter has
-    for p in new.parameters.iter() {
-        if p.in_list.is_some() && builtin_in_list(p.in_list.as_ref()).is_none() {
-            let before = old.parameters.iter().find(|o| o.name == p.name);
-            if before.map(|o| &o.in_list) != Some(&p.in_list) {
-                return Some(format!(
-                    "parameter {} has a new `in` list expression, which a reload can't make yet",
-                    p.name
-                ));
-            }
-        }
-    }
-    None
 }
 
 /// A proc's parameters as BYOND keeps them: names and input types, not

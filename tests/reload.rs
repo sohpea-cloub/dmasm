@@ -179,11 +179,6 @@ fn refuses_what_a_reload_cant_do() {
             "var a's declaration changed",
         ),
         (
-            "in-list",
-            base.replace("f(x)", "f(x in list(1, 2))"),
-            "`in` list expression",
-        ),
-        (
             "setting",
             base.replace(
                 "/obj/verb/v()\n\treturn",
@@ -595,7 +590,7 @@ fn in_lists_are_the_words_dreammaker_writes() {
 }
 
 #[test]
-fn in_list_expressions_can_stay_but_not_change() {
+fn in_list_expressions_are_kept_or_compiled() {
     let before = "/mob/proc/f(obj/a in src.contents, b)\n\treturn 1\n";
     let changes = changes(
         "in-list-kept",
@@ -604,12 +599,30 @@ fn in_list_expressions_can_stay_but_not_change() {
     );
     assert!(changes.refused.is_empty(), "{:?}", changes.refused);
     assert_eq!(changes.reloads[0].params[0].in_list, InList::Kept);
-    let refused = refusal(
+
+    // A new one is compiled into a proc that returns the list, on the type
+    let changes = changes_of(
         "in-list-changed",
         before,
-        "/mob/proc/f(obj/a in src.loc, b)\n\treturn 1\n",
+        "/mob/proc/f(obj/a in src.loc, b)\n\treturn 1\n/mob/proc/g(n in list(1, 2))\n\treturn n\n",
     );
-    assert!(refused.contains("`in` list expression"), "{}", refused);
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    let InList::New(code) = &changes.reloads[0].params[0].in_list else {
+        panic!("{:?}", changes.reloads[0].params[0].in_list);
+    };
+    assert!(
+        dmasm::format(&code.nodes).contains("cache = src; cache[\"loc\"]"),
+        "{}",
+        dmasm::format(&code.nodes)
+    );
+    let InList::New(code) = &changes.new_procs[0].code.params[0].in_list else {
+        panic!("{:?}", changes.new_procs[0].code.params[0].in_list);
+    };
+    assert!(
+        dmasm::format(&code.nodes).contains("NewList 2"),
+        "{}",
+        dmasm::format(&code.nodes)
+    );
 }
 
 #[test]
