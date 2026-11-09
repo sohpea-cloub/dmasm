@@ -30,6 +30,27 @@ running world can have procs replaced with recompiled ones (hot reloading).
 The tooling for these checks (it reads `.dmb` files offline) isn't in this repository
 yet.
 
+## BYOND versions
+
+`ProcSource::byond` (and `compile_expr_for`, and `reload::ParseOptions::byond`) says
+which build's DreamMaker to match: the running world's. The differences between builds
+are in `src/compiler/versions.rs`, each found by building the same probe procs (every
+builtin with variables and with constants of each kind, every operator, and other
+forms) with each build's DreamMaker and comparing. Builds checked: 515.1637, 515.1647,
+516.1659, 516.1685, 516.1688, and to find where each change came, every build from
+515.1637 to 516.1660 and 516.1664, 1668 to 1672, 1676, 1681 and 1684.
+
+- **515** has `Sin`, `Cos` and `Tan` where 516 has `Sin2`, `Cos2` and `Tan2`, doesn't fold
+  `ceil`, `floor`, `round`, `trunc` and `fract` of constants, and lacks some builtins
+  (`sign`, `lerp`, `astype`, `values_*`, `vector`, `pixloc`, `load_ext`,
+  `bound_pixloc`): there a call to one is a call to a global proc of that name, which a
+  codebase may define. `alist()`, `for (k, v in list)` and (before 515.1644)
+  `__PROC__` are refused for a build without them.
+- **`isnan` and `isinf`** of a number fold from 516. Until 516.1669 (and in 516.1671) it folds only the
+  test and still reads the flag (`PushInt 0; GetFlag`, which returns whatever the last
+  test left: DreamMaker's bug, copied); 516.1670 and from 516.1672 it folds to a
+  constant.
+
 ## Encodings that differ from DreamMaker
 
 These are accepted as equivalent by the comparison:

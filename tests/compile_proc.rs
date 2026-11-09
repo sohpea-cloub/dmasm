@@ -32,6 +32,7 @@ fn compile(code: &str, ty: &str, name: &str) -> String {
         file: "test.dm",
         debug_info: false,
         index: None,
+        byond: dmasm::ByondVersion::LATEST,
     };
     let compiled = compile_proc(&source).expect("compiles");
     dmasm::format(&compiled.nodes)
@@ -215,6 +216,7 @@ fn same_named_static_locals_in_one_proc_are_different_globals() {
         file: "test.dm",
         debug_info: false,
         index: None,
+        byond: dmasm::ByondVersion::LATEST,
     };
     let compiled = compile_proc(&source).unwrap();
     let scopes: Vec<Option<String>> = compiled

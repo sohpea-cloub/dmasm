@@ -13,7 +13,7 @@ fn finds_globals_and_static_locals() {
     let tree = parser.parse_object_tree();
     let ty = tree.root();
     let value = ty.get().procs.get("f").unwrap().value.last().unwrap();
-    let source = ProcSource { tree: &tree, ty, name: "f", value, file: "test.dm", debug_info: false, index: None };
+    let source = ProcSource { tree: &tree, ty, name: "f", value, file: "test.dm", debug_info: false, index: None, byond: dmasm::ByondVersion::LATEST };
     let compiled = compile_proc(&source).unwrap();
 
     let mut found: Vec<(String, Option<String>)> = compiled

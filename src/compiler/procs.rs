@@ -27,6 +27,8 @@ pub struct ProcSource<'a> {
     /// that isn't the tree's own (a definition parsed again). Otherwise it's
     /// found in the tree.
     pub index: Option<usize>,
+    /// The build whose DreamMaker the code has to match: the running world's.
+    pub byond: crate::ByondVersion,
 }
 
 #[derive(Debug)]
@@ -239,6 +241,7 @@ pub fn compile_proc(source: &ProcSource) -> Result<CompiledProc, CompileError> {
 
     let mut compiler = Compiler::new(params.clone(), Some(ctx));
     compiler.debug_info = source.debug_info;
+    compiler.byond = source.byond;
     compiler.emit_ins(Instruction::DbgFile(DMString(
         source.file.as_bytes().to_vec(),
     )));

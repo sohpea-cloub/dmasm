@@ -28,7 +28,7 @@ use dreammaker::preprocessor::DefineHistory;
 use dreammaker::{Context, FileId, Severity};
 
 use crate::compiler::{compile_proc, CompiledProc, ProcSource};
-use crate::{Instruction, Node};
+use crate::{ByondVersion, Instruction, Node};
 
 /// A proc as auxtools' debug server names it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -476,6 +476,8 @@ pub struct Snapshot {
     /// Definitions parsed again from their files since, in place of the
     /// tree's
     patched: HashMap<ProcKey, ProcValue>,
+    /// The build the code is compiled for
+    byond: ByondVersion,
 }
 
 /// What changed in one file, parsed again on its own (see
@@ -523,6 +525,9 @@ impl Snapshot {
         let defines = pp.finalize();
         let mut snapshot = Self::from_tree(ctx, tree);
         snapshot.defines = Some(defines);
+        if let Some((major, build)) = options.byond {
+            snapshot.byond = ByondVersion::new(major, build);
+        }
         Ok(snapshot)
     }
 
@@ -761,7 +766,19 @@ impl Snapshot {
             procs,
             defines: None,
             patched: HashMap::new(),
+            byond: ByondVersion::LATEST,
         }
+    }
+
+    /// The build the code is compiled for: `ParseOptions::byond`, or the
+    /// newest one dmasm knows.
+    pub fn byond(&self) -> ByondVersion {
+        self.byond
+    }
+
+    /// Compiles for `byond` from now on.
+    pub fn set_byond(&mut self, byond: ByondVersion) {
+        self.byond = byond;
     }
 
     pub fn tree(&self) -> &ObjectTree {
@@ -976,6 +993,7 @@ impl Snapshot {
             file: &file,
             debug_info,
             index: None,
+            byond: self.byond,
         };
         let path = format!("{}/{}", ty.get().path, name);
         let compiled = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1030,6 +1048,7 @@ impl Snapshot {
             file: &file,
             debug_info: true,
             index: Some(*index),
+            byond: self.byond,
         };
         // The compiler is new, and one proc it can't handle shouldn't take the
         // whole watcher down

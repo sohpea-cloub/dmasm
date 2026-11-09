@@ -781,6 +781,7 @@ fn emit_statement_inner(
         }
 
         Statement::ForKeyValue(kv) => {
+            super::versions::require(compiler.byond, super::versions::BYOND_516, "for (k, v in list)")?;
             ctx(compiler).scopes.push(vec![]);
             let (key, value) = if let Some(var_type) = &kv.var_type {
                 let k = ctx(compiler)

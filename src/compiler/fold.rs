@@ -196,7 +196,7 @@ fn static_const(
 
 /// A one-argument math builtin of a constant, as DreamMaker folds it: `None`
 /// if `name` isn't one, `Some(None)` if the value is out of its domain.
-fn math1(name: &str, x: f32) -> Option<Option<f32>> {
+fn math1(name: &str, x: f32, _byond: crate::ByondVersion) -> Option<Option<f32>> {
     let d = x as f64;
     let r = match name {
         "sqrt" => (d >= 0.0).then(|| d.sqrt()),
@@ -239,9 +239,26 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
         Term::String(s) => Constant::Text(super::strings::parse(s).ok()?.0),
         Term::Expr(inner) => value(c, inner)?,
         // Math builtins of constants (not min and max, which DreamMaker leaves)
-        Term::Call(name, args) if args.len() == 1 && math1(name.as_str(), 0.0).is_some() => {
+        Term::Call(name, args)
+            if args.len() == 1
+                && math1(name.as_str(), 0.0, c.byond).is_some()
+                && super::versions::folds(c.byond, name.as_str()) =>
+        {
             match value(c, &args[0])? {
-                Constant::Number(n) => Constant::Number(math1(name.as_str(), n)??),
+                Constant::Number(n) => Constant::Number(math1(name.as_str(), n, c.byond)??),
+                _ => return None,
+            }
+        }
+        // isnan(1) and isinf(1) (see versions::clean_nan_fold)
+        Term::Call(name, args)
+            if args.len() == 1
+                && super::versions::nan_test(name.as_str(), 0.0).is_some()
+                && super::versions::clean_nan_fold(c.byond) =>
+        {
+            match value(c, &args[0])? {
+                Constant::Number(n) => {
+                    Constant::Number(super::versions::nan_test(name.as_str(), n)? as i32 as f32)
+                }
                 _ => return None,
             }
         }
@@ -295,7 +312,11 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
                 Constant::Number(x.ln() / base.ln())
             }
         }
-        Term::Call(name, args) if name.as_str() == "round" && args.len() == 2 => {
+        Term::Call(name, args)
+            if name.as_str() == "round"
+                && args.len() == 2
+                && super::versions::folds(c.byond, "round") =>
+        {
             let (Constant::Number(x), Constant::Number(to)) =
                 (value(c, &args[0])?, value(c, &args[1])?)
             else {

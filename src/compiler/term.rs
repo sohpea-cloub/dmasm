@@ -454,7 +454,10 @@ pub(super) fn emit(compiler: &mut Compiler<'_>, term: Term) -> Result<EvalKind, 
             Ok(EvalKind::Stack)
         }
 
-        Term::Alist(args) => emit_alist(compiler, args.into_vec()),
+        Term::Alist(args) => {
+            super::versions::require(compiler.byond, super::versions::BYOND_516, "alist()")?;
+            emit_alist(compiler, args.into_vec())
+        }
 
         Term::List(args) => {
             let arg_count = args.len();
@@ -547,6 +550,7 @@ pub(super) fn emit(compiler: &mut Compiler<'_>, term: Term) -> Result<EvalKind, 
             Ok(EvalKind::Stack)
         }
         Term::__PROC__ if compiler.proc.is_some() => {
+            super::versions::require(compiler.byond, super::versions::PROC_MACRO, "__PROC__")?;
             let path = compiler.proc.as_ref().unwrap().proc_path.clone();
             compiler.emit_ins(Instruction::PushVal(Value::Path(path)));
             Ok(EvalKind::Stack)

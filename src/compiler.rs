@@ -5,7 +5,7 @@ use dreammaker::{ast::Expression, Severity};
 
 use crate::operands::{self, DMString, GlobalVar, Label, Variable};
 use crate::Instruction;
-use crate::Node;
+use crate::{ByondVersion, Node};
 
 mod assignment;
 mod fold;
@@ -23,6 +23,7 @@ mod strings;
 mod term;
 mod ternary;
 mod unary;
+mod versions;
 
 /// The text a string literal makes, its escapes and text macros as BYOND
 /// keeps them. `raw` is the literal as the parser has it.
@@ -89,6 +90,11 @@ pub enum CompileError {
     AtLine(u32, Box<CompileError>),
 
     AmbiguousListConstructor,
+    /// Something the build the code is compiled for doesn't have.
+    NotInByond {
+        what: String,
+        byond: ByondVersion,
+    },
     InvalidLocateArgs,
 
     // TODO: Merge these
@@ -173,6 +179,9 @@ impl fmt::Display for CompileError {
             CompileError::UnsupportedStatement(what) => {
                 write!(f, "unsupported statement: {}", what)
             }
+            CompileError::NotInByond { what, byond } => {
+                write!(f, "BYOND {} doesn't have {}", byond, what)
+            }
             CompileError::UnsupportedCompilerMacro { name } => {
                 write!(f, "unsupported compiler macro: {}", name)
             }
@@ -180,8 +189,21 @@ impl fmt::Display for CompileError {
     }
 }
 
+/// Compiles an expression for the debugger's evals, for the newest build
+/// (see `compile_expr_for`).
 pub fn compile_expr(code: &str, params: &[&str]) -> Result<Vec<Node>, CompileError> {
+    compile_expr_for(code, params, ByondVersion::LATEST)
+}
+
+/// Compiles an expression for the debugger's evals in a world running
+/// `byond`.
+pub fn compile_expr_for(
+    code: &str,
+    params: &[&str],
+    byond: ByondVersion,
+) -> Result<Vec<Node>, CompileError> {
     let mut compiler = Compiler::new(params.iter().map(|x| x.to_string()).collect(), None);
+    compiler.byond = byond;
     compiler.emit_ins(Instruction::DbgFile(DMString(
         b"<dmasm expression>".to_vec(),
     )));
@@ -276,6 +298,8 @@ struct Compiler<'a> {
     explicit_src: bool,
     /// Emit DbgFile and DbgLine.
     debug_info: bool,
+    /// The build whose DreamMaker the code has to match.
+    byond: ByondVersion,
     /// The cache state at the jumps seen so far to each label, merged.
     label_states: std::collections::HashMap<String, (u32, Option<Vec<Variable>>)>,
     /// Set while compiling an if or while condition that is a && or || chain.
@@ -312,6 +336,7 @@ impl<'a> Compiler<'a> {
 
             explicit_src: false,
             debug_info: true,
+            byond: ByondVersion::LATEST,
             label_states: Default::default(),
             condition_chain: false,
             mul_lhs: false,

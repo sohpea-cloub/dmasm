@@ -103,7 +103,7 @@ macro_rules! simple_stack_procs {
                             });
                         }
 
-                        compiler.emit_ins($instruction);
+                        compiler.emit_ins(super::versions::instruction(compiler.byond, $instruction));
                         Ok(Some(EvalKind::Stack))
                     }
                 )*
@@ -344,6 +344,10 @@ pub(super) fn emit(
     name: &str,
     args: &Vec<Expression>,
 ) -> Result<Option<EvalKind>, CompileError> {
+    // A builtin this build doesn't have is a call to a proc of that name
+    if !super::versions::has_builtin(compiler.byond, name) {
+        return Ok(None);
+    }
     if is_unsupported_proc(name) {
         return Err(CompileError::UnsupportedBuiltin {
             proc: name.to_owned(),
@@ -649,6 +653,16 @@ fn emit_overloaded(
                 "isnan" => Instruction::IsNaN,
                 _ => Instruction::IsInf,
             };
+            // 516.1659 folds the test of a number but still reads the flag
+            if n == 1 && super::versions::folds(compiler.byond, name) {
+                let known = super::fold::number(compiler, &args[0])
+                    .and_then(|x| super::versions::nan_test(name, x));
+                if let Some(result) = known {
+                    compiler.emit_ins(Instruction::PushInt(result as i32));
+                    compiler.emit_ins(Instruction::GetFlag);
+                    return Ok(Some(EvalKind::Stack));
+                }
+            }
             let end = compiler.new_label();
             for arg in args {
                 push_args(compiler, std::slice::from_ref(arg))?;
