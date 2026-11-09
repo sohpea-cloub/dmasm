@@ -251,6 +251,24 @@ fn vars_declared_another_way() {
 }
 
 #[test]
+fn type_macro_in_an_inherited_default_is_the_declaring_type() {
+    let before = "/datum/a\n/datum/a/b\n";
+    let after = "/datum/a\n\tvar/list/l = list(__TYPE__)\n/datum/a/b\n";
+    let changes = changes("type-macro", before, after);
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    assert_eq!(changes.init_procs.len(), 2);
+    for init in &changes.init_procs {
+        let code = init.code.as_ref().unwrap();
+        assert!(
+            code.nodes.iter().any(|n| matches!(n, Node::Instruction(Instruction::PushVal(v), _) if format!("{:?}", v) == "Path(\"/datum/a\")")),
+            "{}: {:?}",
+            init.type_path,
+            code.nodes
+        );
+    }
+}
+
+#[test]
 fn spaceman_dmm_is_not_defined() {
     let code = |n: u32| {
         format!("/proc/a()\n#ifdef SPACEMAN_DMM\n\treturn 0\n#else\n\treturn {n}\n#endif\n")

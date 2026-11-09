@@ -1733,10 +1733,13 @@ fn inits<'a>(t: TypeRef, memo: &'a mut HashMap<usize, Vec<Init>>) -> &'a [Init] 
                 }
                 if let Some(value) = &var.value.expression {
                     if var_constant(var).is_none() {
+                        // Subtypes run it as it is
+                        let mut value = value.clone();
+                        type_macro_is(&mut value, &t.get().path);
                         list.push(Init {
                             var: name.as_str().to_owned(),
                             on: t.get().path.clone(),
-                            value: value.clone(),
+                            value,
                             location: var.value.location,
                         });
                     }
@@ -1746,6 +1749,100 @@ fn inits<'a>(t: TypeRef, memo: &'a mut HashMap<usize, Vec<Init>>) -> &'a [Init] 
         memo.insert(t.index().index(), list);
     }
     &memo[&t.index().index()]
+}
+
+/// Makes `__TYPE__` in `expression` the type at `path`: in a var's initial
+/// value, it's the type that declares the value.
+fn type_macro_is(expression: &mut dreammaker::ast::Expression, path: &str) {
+    use dreammaker::ast::{Expression, Follow, Ident, PathOp, Prefab, RelativePath, Term};
+    fn term(term: &mut Term, path: &str) {
+        let all = |list: &mut [Expression]| list.iter_mut().for_each(|e| type_macro_is(e, path));
+        match term {
+            Term::__TYPE__ => {
+                let mut parts = path.split('/').filter(|part| !part.is_empty());
+                let Some(first) = parts.next() else {
+                    *term = Term::Null;
+                    return;
+                };
+                let mut relative =
+                    RelativePath::single(PathOp::Slash, Ident::from_nonstatic(first));
+                for part in parts {
+                    relative.push((PathOp::Slash, Ident::from_nonstatic(part)));
+                }
+                *term = Term::Prefab(Box::new(Prefab::from(relative)));
+            }
+            Term::Expr(e) => type_macro_is(e, path),
+            Term::Prefab(prefab) => prefab
+                .vars
+                .iter_mut()
+                .for_each(|(_, e)| type_macro_is(e, path)),
+            Term::InterpString(_, parts) => parts
+                .iter_mut()
+                .filter_map(|(e, _)| e.as_mut())
+                .for_each(|e| type_macro_is(e, path)),
+            Term::Call(_, args)
+            | Term::SelfCall(args)
+            | Term::ParentCall(args)
+            | Term::List(args)
+            | Term::Alist(args)
+            | Term::GlobalCall(_, args) => all(args),
+            Term::NewImplicit { args } | Term::NewMiniExpr { args, .. } => {
+                args.iter_mut().for_each(|args| all(args))
+            }
+            Term::NewPrefab { prefab, args } => {
+                prefab
+                    .vars
+                    .iter_mut()
+                    .for_each(|(_, e)| type_macro_is(e, path));
+                args.iter_mut().for_each(|args| all(args));
+            }
+            Term::Input { args, in_list, .. } | Term::Locate { args, in_list } => {
+                all(args);
+                in_list.iter_mut().for_each(|e| type_macro_is(e, path));
+            }
+            Term::Pick(choices) => choices.iter_mut().for_each(|(weight, e)| {
+                weight.iter_mut().for_each(|w| type_macro_is(w, path));
+                type_macro_is(e, path);
+            }),
+            Term::DynamicCall(a, b) => {
+                all(a);
+                all(b);
+            }
+            Term::ExternalCall {
+                library,
+                function,
+                args,
+            } => {
+                library.iter_mut().for_each(|e| type_macro_is(e, path));
+                type_macro_is(function, path);
+                all(args);
+            }
+            _ => {}
+        }
+    }
+    match expression {
+        Expression::Base { term: t, follow } => {
+            term(&mut t.elem, path);
+            for f in follow.iter_mut() {
+                match &mut f.elem {
+                    Follow::Index(_, e) => type_macro_is(e, path),
+                    Follow::Call(_, _, args) => {
+                        args.iter_mut().for_each(|e| type_macro_is(e, path))
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Expression::BinaryOp { lhs, rhs, .. } | Expression::AssignOp { lhs, rhs, .. } => {
+            type_macro_is(lhs, path);
+            type_macro_is(rhs, path);
+        }
+        Expression::TernaryOp { cond, if_, else_ } => {
+            type_macro_is(cond, path);
+            type_macro_is(if_, path);
+            type_macro_is(else_, path);
+        }
+    }
 }
 
 /// The types whose init procs changed, and their new code.

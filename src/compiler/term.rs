@@ -541,6 +541,11 @@ pub(super) fn emit(compiler: &mut Compiler<'_>, term: Term) -> Result<EvalKind, 
             compiler.emit_ins(Instruction::PushVal(Value::Path(path)));
             Ok(EvalKind::Stack)
         }
+        // A global proc's (and a global var's initial value's)
+        Term::__TYPE__ if compiler.proc.is_some() => {
+            compiler.emit_ins(Instruction::PushVal(Value::Null));
+            Ok(EvalKind::Stack)
+        }
         Term::__PROC__ if compiler.proc.is_some() => {
             let path = compiler.proc.as_ref().unwrap().proc_path.clone();
             compiler.emit_ins(Instruction::PushVal(Value::Path(path)));

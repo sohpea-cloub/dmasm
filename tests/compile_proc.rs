@@ -429,6 +429,12 @@ fn call_ext_of_a_loaded_function() {
 }
 
 #[test]
+fn type_macro_in_a_global_proc_is_null() {
+    let code = compile("/proc/f()\n\treturn __TYPE__\n", "", "f");
+    assert_has(&code, &["PushVal null", "Ret"]);
+}
+
+#[test]
 fn missile_leaves_nothing() {
     let code = compile("/proc/f()\n\tvar/atom/a\n\tmissile(/obj, a, a)\n", "", "f");
     assert_has(&code, &["GetVar local(0)", "Missile", "End"]);
