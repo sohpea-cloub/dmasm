@@ -605,3 +605,17 @@ fn logical_assignment_through_safe_access() {
         &["Jz LAB_0001", "PushCache", "GetVar cache = arg(0); cache[\"n\"]", "PopCache", "SetVar cache[\"v\"]"],
     );
 }
+
+#[test]
+fn or_assign_saves_the_cache_for_some_values() {
+    let types = "var/gx = 1\n/datum/t\n\tvar/n = 1\n\tvar/m = 2\n\tvar/static/st = 3\n\tvar/const/k = 4\n";
+    let value = |v: &str| compile(&format!("{types}/proc/f(datum/t/o, list/L)\n\to.n ||= {v}\n"), "", "f");
+    // a static or const read through a field and `global.x` don't use the cache...
+    for v in ["o.st", "o.k", "global.gx", "gx"] {
+        assert!(!value(v).contains("PushCache"), "{v}: {}", value(v));
+    }
+    // ...a field, a list element, a global proc call and `::` save it
+    for v in ["o.m", "L[1]", "/datum/t::st", "o::st"] {
+        assert!(value(v).contains("PushCache"), "{v}: {}", value(v));
+    }
+}

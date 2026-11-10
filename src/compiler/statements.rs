@@ -1806,11 +1806,11 @@ fn emit_expr_statement_inner(compiler: &mut Compiler, expr: &Expression) -> Resu
                 compiler.global_field = false;
                 emit_value(compiler, rhs)?;
                 compiler.implicit_type = None;
-                // (a global proc call or `global.x` counts too)
+                // (a global proc call or a list element counts too)
                 let saves = std::mem::take(&mut compiler.global_field)
                     || compiler.nodes[start..].iter().any(|n| {
                         matches!(n, Node::Instruction(i, _) if super::procs::touches_cache(i)
-                            || matches!(i, Instruction::CallGlob(..) | Instruction::CallGlobalArgList(_)))
+                            || matches!(i, Instruction::CallGlob(..) | Instruction::CallGlobalArgList(_) | Instruction::ListGet))
                     });
                 // (a list element's key too, when the value indexes a list)
                 let saves_key = !field

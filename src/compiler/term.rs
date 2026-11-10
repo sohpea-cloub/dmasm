@@ -61,7 +61,6 @@ pub(super) fn emit(compiler: &mut Compiler<'_>, term: Term) -> Result<EvalKind, 
             Ok(compiler.emit_find_var(ident))
         }
         Term::GlobalIdent(ident) => {
-            compiler.global_field = true;
             Ok(EvalKind::Var(Variable::Global(GlobalVar::named(
                 ident.as_str().as_bytes(),
                 Some(String::new()),

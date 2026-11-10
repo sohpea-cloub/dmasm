@@ -314,9 +314,10 @@ struct Compiler<'a> {
     regroup_root: bool,
     /// Passes `regroup_root` on to the binary operation it applies to.
     regroup_chain: bool,
-    /// Set when a field (`a.b`, `global.x`, a static) is read or a proc called
-    /// through one: DreamMaker saves the cache around `||=`'s value for these
-    /// even when the code doesn't use it
+    /// Set when a field (`a.b`, or anything with `::`) is read or a proc
+    /// called through one: DreamMaker saves the cache around `||=`'s value for
+    /// these even when the code doesn't use it (but not for `global.x`, or a
+    /// static or const var read as `a.s`)
     global_field: bool,
     /// The element type of the `/list/T` var a follow starts from, for its
     /// first index. Taken by `follow::emit_typed`.
@@ -658,6 +659,7 @@ impl<'a> Compiler<'a> {
                 ) = (type_term, unspanned_follows.first())
                 {
                     if self.proc.is_some() && prefab.vars.is_empty() {
+                        self.global_field = true;
                         let path = prefab.path.to_string();
                         let kind = procs::emit_type_scope(self, &path, &unspanned_follows[0])?;
                         let ty = self.proc.as_ref().unwrap().tree.find(&path);

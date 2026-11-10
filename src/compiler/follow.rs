@@ -68,7 +68,10 @@ pub(super) fn emit_typed<'a>(
             compiler.emit_move_to_stack(kind)?;
             return emit_safe(compiler, sub_expr, follow.collect(), ty);
         }
-        if matches!(sub_expr, Follow::Field(..) | Follow::Call(..)) {
+        let global_field = compiler.global_field;
+        if matches!(sub_expr, Follow::Field(..) | Follow::Call(..) | Follow::StaticField(_))
+            && !(matches!(kind, EvalKind::Global) && matches!(sub_expr, Follow::Field(..)))
+        {
             compiler.global_field = true;
         }
         if !matches!(sub_expr, Follow::Field(..) | Follow::Index(..)) {
@@ -117,6 +120,8 @@ pub(super) fn emit_typed<'a>(
                             EvalKind::Var(_) | EvalKind::Field(..) | EvalKind::Global
                         )
                     {
+                        // (which isn't a field read to `||=`)
+                        compiler.global_field = global_field;
                         field_buffer.clear();
                         kind = EvalKind::Var(Variable::Global(GlobalVar::named(
                             ident.as_str().as_bytes(),
