@@ -421,6 +421,26 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
     })
 }
 
+/// Whether `expr` has a `&&` or `||` in it.
+pub(super) fn has_logic(expr: &Expression) -> bool {
+    match expr {
+        Expression::BinaryOp {
+            op: BinaryOp::And | BinaryOp::Or,
+            ..
+        } => true,
+        Expression::BinaryOp { lhs, rhs, .. } => has_logic(lhs) || has_logic(rhs),
+        Expression::TernaryOp { cond, if_, else_ } => {
+            has_logic(cond) || has_logic(if_) || has_logic(else_)
+        }
+        Expression::AssignOp { .. } => false,
+        Expression::Base { term, .. } => match &term.elem {
+            Term::Expr(inner) => has_logic(inner),
+            Term::Call(_, args) => args.iter().any(has_logic),
+            _ => false,
+        },
+    }
+}
+
 /// Whether every argument is a constant (`k = v` too, a bare name for k).
 fn constant_args(c: &Compiler, args: &[Expression]) -> bool {
     args.iter().all(|arg| match arg {

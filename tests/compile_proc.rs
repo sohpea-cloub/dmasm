@@ -746,3 +746,13 @@ fn a_dropped_if_forgets_the_cache() {
     let src = "/datum/t\n\tvar/list/l = list(1)\n/proc/f(datum/t/o, a)\n\to.l.Remove(a)\n\tif (0)\n\t\ta = 2\n\treturn o.l.len\n";
     assert_has(&compile(src, "", "f"), &["Pop", "GetVar cache = arg(0); cache = cache[\"l\"]; cache[\"len\"]"]);
 }
+
+#[test]
+fn folding_and_or_forgets_the_cache() {
+    let types = "/datum/t\n\tvar/a = 1\n\tvar/list/l\n";
+    let code = compile(&format!("{types}/proc/f(datum/t/p, n)\n\tp.l = list()\n\tn = (1 || 2)\n\treturn p.a\n"), "", "f");
+    assert_has(&code, &["SetVar arg(1)", "GetVar cache = arg(0); cache[\"a\"]"]);
+    // not ? :
+    let code = compile(&format!("{types}/proc/f(datum/t/p, n)\n\tp.l = list()\n\tn = (1 ? 2 : 3)\n\treturn p.a\n"), "", "f");
+    assert_has(&code, &["SetVar arg(1)", "GetVar cache[\"a\"]"]);
+}

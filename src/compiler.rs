@@ -565,7 +565,12 @@ impl<'a> Compiler<'a> {
         // (see `regroup_root`)
         let root = std::mem::take(&mut self.regroup_root);
         if self.proc.is_some() {
-            match fold::constant(self, &expr) {
+            let folded = fold::constant(self, &expr);
+            // (DreamMaker forgets the cache where it folds `&&` or `||`)
+            if folded.as_ref().is_some_and(|c| *c != fold::Constant::New) && fold::has_logic(&expr) {
+                self.cache = None;
+            }
+            match folded {
                 Some(fold::Constant::Number(value)) => {
                     self.emit_number(value);
                     return Ok(EvalKind::Stack);
