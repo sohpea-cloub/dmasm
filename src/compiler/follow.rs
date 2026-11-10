@@ -441,10 +441,25 @@ pub(super) fn emit_typed<'a>(
                 ty = decl.and_then(|d| super::procs::declared_type(compiler, &d.get().var_type));
             }
 
-            Follow::ProcReference(ident) | Follow::StaticField(ident) => {
+            // With no types to go by (a debugger's expression), x::name is
+            // read at runtime as DreamMaker reads it where it can't fold it:
+            // `initial(x.name)`, which BYOND answers for a type too
+            Follow::StaticField(ident) => {
+                kind = commit_field_buffer(compiler, kind, &mut field_buffer)?;
+                compiler.emit_move_to_stack(kind)?;
+                compiler.emit_ins(Instruction::SetVar(Variable::Cache));
                 compiler.emit_ins(Instruction::GetVar(Variable::Initial(Box::new(
-                    Variable::Global(GlobalVar::named(ident.as_str().as_bytes(), None)),
+                    Variable::Field(DMString(ident.as_str().into())),
                 ))));
+                kind = EvalKind::Stack;
+                ty = None;
+            }
+
+            // which proc that is takes the types
+            Follow::ProcReference(_) => {
+                return Err(CompileError::UnsupportedStatement(
+                    "`::` naming a proc, without the code's types",
+                ))
             }
         }
     }

@@ -419,6 +419,11 @@ pub(super) fn emit(
                 return Err(CompileError::IncorrectArgCount(name.to_owned()));
             }
 
+            // initial(x::v) is x's initial v, as `x::v` is
+            if let Some(var) = initial_static_field(compiler, &args[0])? {
+                compiler.emit_ins(Instruction::GetVar(var));
+                return Ok(Some(EvalKind::Stack));
+            }
             // initial(a?.b) reads a.b, null check or not: each `?.` starts a
             // new chain from the cache
             if let Some(var) = initial_safe(compiler, &args[0])? {
@@ -1109,6 +1114,53 @@ pub(super) fn arglist_inner(expr: &Expression) -> Option<&Expression> {
         },
         _ => None,
     }
+}
+
+/// The variable for `initial(x::v)`, after putting x in the cache: x is
+/// evaluated as it would be alone (a type's path, or an object), and v is
+/// read as `initial(x.v)` reads it, at runtime. DreamMaker doesn't fold it
+/// even where it folds `x::v`. None if the last step isn't `::v`.
+fn initial_static_field(
+    compiler: &mut Compiler<'_>,
+    expr: &Expression,
+) -> Result<Option<Variable>, CompileError> {
+    use dreammaker::ast::{Follow, Term};
+    let Expression::Base { term, follow } = expr else {
+        return Ok(None);
+    };
+    let Some((last, rest)) = follow.split_last() else {
+        return Ok(None);
+    };
+    let Follow::StaticField(name) = &last.elem else {
+        return Ok(None);
+    };
+    let base = Expression::Base {
+        term: term.clone(),
+        follow: rest.to_vec().into_boxed_slice(),
+    };
+    // (the type x is, for a static var, which is its global)
+    let ty = match &term.elem {
+        Term::Prefab(prefab) if rest.is_empty() && prefab.vars.is_empty() => compiler
+            .proc
+            .as_ref()
+            .and_then(|ctx| ctx.tree.find(&prefab.path.to_string())),
+        _ => super::procs::expr_type(compiler, &base),
+    };
+    let static_scope = ty
+        .and_then(|ty| super::procs::member_var(ty, name.as_str()))
+        .filter(super::procs::is_global_member)
+        .map(|decl| decl.ty().get().path.clone());
+    let kind = compiler.emit_expr(base)?;
+    compiler.emit_move_to_stack(kind)?;
+    compiler.emit_ins(Instruction::SetVar(Variable::Cache));
+    Ok(Some(match static_scope {
+        Some(scope) => Variable::Initial(Box::new(Variable::Global(
+            crate::operands::GlobalVar::named(name.as_str().as_bytes(), Some(scope)),
+        ))),
+        None => Variable::Initial(Box::new(Variable::Field(DMString(
+            name.as_str().as_bytes().to_vec(),
+        )))),
+    }))
 }
 
 /// The variable for `initial(a?.b.c?.d)`, after putting what comes before the

@@ -213,3 +213,32 @@ fn a_pointer_made_in_place_is_read_through() {
     let code = instructions("*p", &["p"]);
     assert_eq!(code[1], Instruction::GetVar(Variable::PtrDeref(Box::new(Variable::Arg(0)))), "{:?}", code);
 }
+
+#[test]
+fn a_type_s_var_by_double_colon_is_its_initial_value() {
+    use dmasm::Variable;
+    // With no types to fold it by, `x::v` is read as DreamMaker reads it
+    // where it can't fold it: x in the cache, then initial(cache.v)
+    let read = |base: Instruction| {
+        vec![
+            base,
+            Instruction::SetVar(Variable::Cache),
+            Instruction::GetVar(Variable::Initial(Box::new(Variable::Field(dmasm::DMString(
+                b"throwforce".to_vec(),
+            ))))),
+        ]
+    };
+    let path = Instruction::PushVal(dmasm::Value::Path("/obj/item".to_owned()));
+    for code in ["/obj/item::throwforce", "initial(/obj/item::throwforce)", "(/obj/item)::throwforce"] {
+        assert_eq!(&instructions(code, &[])[1..4], &read(path.clone())[..], "{}", code);
+    }
+    let arg = Instruction::GetVar(Variable::Arg(0));
+    for code in ["x::throwforce", "initial(x::throwforce)"] {
+        assert_eq!(&instructions(code, &["x"])[1..4], &read(arg.clone())[..], "{}", code);
+    }
+    // and so is a bare name's, in a scope
+    let ins = scoped("initial(hp::throwforce)", &[]).unwrap();
+    assert_eq!(&ins[2..4], &read(Instruction::GetVar(Variable::Null))[1..3], "{:?}", ins);
+    // a proc's path takes the code's types
+    assert!(compile_expr("/obj/item::f()", &[]).is_err());
+}

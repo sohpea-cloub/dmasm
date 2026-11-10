@@ -953,3 +953,31 @@ fn deliberate_differences_and_copied_quirks_are_warned_about() {
     quiet(&format!("{types}/proc/f(datum/t/a, datum/t/b)\n\ta?.L[1] += b.n\n"), v(1685));
     quiet(&format!("{types}/proc/f(datum/t/a)\n\ta?.L[1] += 2\n"), v(1684));
 }
+
+#[test]
+fn initial_of_a_static_field() {
+    // DreamMaker folds `/obj/item::throwforce` but not `initial()` of it: x
+    // goes in the cache and the var is read at runtime, a static one as its
+    // global
+    let src = "/obj/item\n\tvar/throwforce = 7\n\tvar/static/sv = 3\n\tvar/obj/item/other\n\
+        /proc/a()\n\treturn initial(/obj/item::throwforce)\n\
+        /proc/b()\n\treturn initial(/obj/item::sv)\n\
+        /proc/c()\n\tvar/obj/item/I = new\n\treturn initial(I.other::throwforce)\n\
+        /obj/item/proc/m()\n\treturn initial(src::throwforce)\n";
+    assert_has(
+        &compile(src, "", "a"),
+        &["PushVal /obj/item", "SetVar cache", "GetVar initial(cache[\"throwforce\"])", "Ret"],
+    );
+    assert_has(
+        &compile(src, "", "b"),
+        &["PushVal /obj/item", "SetVar cache", "GetVar initial(global(\"sv\"))", "Ret"],
+    );
+    assert_has(
+        &compile(src, "", "c"),
+        &["GetVar cache = local(0); cache[\"other\"]", "SetVar cache", "GetVar initial(cache[\"throwforce\"])"],
+    );
+    assert_has(
+        &compile(src, "/obj/item", "m"),
+        &["GetVar src", "SetVar cache", "GetVar initial(cache[\"throwforce\"])"],
+    );
+}
