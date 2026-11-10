@@ -868,3 +868,35 @@ fn the_place_of_an_augmented_assignment_records_no_line() {
     assert_eq!(lines(compile_with_lines(&src("-="))), ["DbgLine 2", "DbgLine 4"]);
     assert_eq!(lines(compile_with_lines(&src("="))), ["DbgLine 2", "DbgLine 4", "DbgLine 2"]);
 }
+
+#[test]
+fn a_folded_default_from_another_file_still_names_the_file_again() {
+    // `/datum/u::x + 1` folds to 4 with no line of its own; when the default
+    // is in another file, the next line names the proc's file again, as
+    // after a default that doesn't fold (compile_with_lines calls every other
+    // file other.dm: a default written in a second buffer)
+    let ctx = dreammaker::Context::default();
+    let mut pp = dreammaker::Preprocessor::from_buffer(&ctx, "test.dm".into(), "/proc/f(a)\n\ta = /datum/u::x + 1\n\ta = 2\n".to_owned());
+    pp.push_file("other.dm".into(), std::io::Cursor::new(b"/datum/u\n\tvar/x = 3\n".to_vec())).unwrap();
+    let mut parser = dreammaker::Parser::new(&ctx, pp);
+    parser.enable_procs();
+    let tree = parser.parse_object_tree();
+    let value = tree.root().get().procs.get("f").unwrap().value.last().unwrap();
+    let source = ProcSource {
+        tree: &tree,
+        ty: tree.root(),
+        name: "f",
+        value,
+        file: "test.dm",
+        debug_info: true,
+        index: None,
+        byond: dmasm::ByondVersion::LATEST,
+        file_names: Some(&|_| "other.dm".to_owned()),
+    };
+    let code = dmasm::format(&compile_proc(&source).unwrap().nodes);
+    let code: Vec<&str> = code.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    assert_eq!(
+        code,
+        ["DbgFile \"test.dm\"", "DbgLine 2", "PushInt 4", "SetVar arg(0)", "DbgFile \"test.dm\"", "DbgLine 3", "PushInt 2", "SetVar arg(0)", "End"]
+    );
+}

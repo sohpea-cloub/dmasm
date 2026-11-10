@@ -604,6 +604,16 @@ impl<'a> Compiler<'a> {
             if folded.as_ref().is_some_and(|c| *c != fold::Constant::New) && fold::has_logic(&expr) {
                 self.cache = None;
             }
+            // A `/type::var` default from another file that folds away
+            // records nothing, but the next line names the proc's file again
+            if folded.as_ref().is_some_and(|c| *c != fold::Constant::New)
+                && self.debug_info
+                && !self.other_file
+                && format!("{expr:?}").contains("StaticField")
+                && self.names_other_file(&expr)
+            {
+                self.other_file = true;
+            }
             match folded {
                 Some(fold::Constant::Number(value)) => {
                     self.emit_number(value);
@@ -809,6 +819,37 @@ impl<'a> Compiler<'a> {
                 Ok(kind)
             }
         }
+    }
+
+    /// Whether `expr`, compiled with nothing folded, records another file
+    /// (a `/type::var` default's): compiled and thrown away
+    fn names_other_file(&mut self, expr: &Expression) -> bool {
+        let start = self.nodes.len();
+        let saved = (
+            self.label_count,
+            self.cache.clone(),
+            self.last_line,
+            self.label_states.clone(),
+            self.global_field,
+            self.line_pending,
+            self.short_circuit_labels.len(),
+        );
+        self.no_fold = true;
+        let ok = self.emit_expr(expr.clone()).is_ok();
+        self.no_fold = false;
+        let found = ok && self.other_file;
+        self.nodes.truncate(start);
+        self.short_circuit_labels.truncate(saved.6);
+        (
+            self.label_count,
+            self.cache,
+            self.last_line,
+            self.label_states,
+            self.global_field,
+            self.line_pending,
+        ) = (saved.0, saved.1, saved.2, saved.3, saved.4, saved.5);
+        self.other_file = false;
+        found
     }
 
     /// Compiles the place an assignment writes to (see `place`)
