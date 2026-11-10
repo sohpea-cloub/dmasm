@@ -163,3 +163,11 @@ fn bit_not_folds() {
     assert_eq!(ret(byond, "~null"), "PushVal 16777215");
     assert_eq!(ret(byond, "~256"), "PushVal 16776959");
 }
+
+#[test]
+fn text2ascii_of_empty_text_folds() {
+    for byond in [ByondVersion::new(515, 1637), ByondVersion::LATEST] {
+        assert_eq!(ret(byond, "text2ascii(\"\")"), "PushInt 0");
+        assert_eq!(ret(byond, "text2ascii(\"x\")"), "PushInt 120");
+    }
+}

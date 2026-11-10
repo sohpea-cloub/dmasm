@@ -363,11 +363,11 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
             };
             Constant::Text(hsl_text(n(&args[0])?, n(&args[1])?, n(&args[2])?).into_bytes())
         }
-        // text2ascii("a") is 97
+        // text2ascii("a") is 97, and of "" 0
         Term::Call(name, args) if name.as_str() == "text2ascii" && args.len() == 1 => {
             match value(c, &args[0])? {
                 Constant::Text(t) => {
-                    let c = String::from_utf8_lossy(&t).chars().next()?;
+                    let c = String::from_utf8_lossy(&t).chars().next().unwrap_or('\0');
                     Constant::Number(c as u32 as f32)
                 }
                 _ => return None,
