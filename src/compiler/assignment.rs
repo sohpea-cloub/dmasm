@@ -54,6 +54,7 @@ fn emit_conditional(
     lhs: Expression,
     rhs: Expression,
 ) -> Result<EvalKind, CompileError> {
+    compiler.place = op != AssignOp::Assign;
     let var = match compiler.emit_inner_expr(lhs)? {
         EvalKind::Field(builder, field) => {
             let holder = builder.get();
@@ -256,7 +257,7 @@ pub(super) fn emit(
             let rhs = compiler.emit_expr(rhs)?;
             compiler.emit_move_to_stack(rhs)?;
 
-            let var = match compiler.emit_expr(lhs)? {
+            let var = match compiler.emit_place(op, lhs)? {
                 EvalKind::Var(var) if is_writable(&var) => var,
 
                 EvalKind::Field(builder, field) => builder.get_field(DMString(field.into())),
@@ -329,7 +330,7 @@ pub(super) fn emit(
             compiler.label_count += 1;
 
             // LHS first for this fucker
-            let lhs = compiler.emit_expr(lhs)?;
+            let lhs = compiler.emit_place(op, lhs)?;
 
             enum CacheKind {
                 Var(Variable),
@@ -420,7 +421,7 @@ fn emit_proc_assignment(
     let store = |compiler: &mut Compiler<'_>| -> Result<(), CompileError> {
         if list {
             compiler.emit_ins(Instruction::PushTop);
-            let kind = compiler.emit_expr(lhs.clone())?;
+            let kind = compiler.emit_place(op, lhs.clone())?;
             if kind != EvalKind::ListRef {
                 return Err(CompileError::ExpectedLValue);
             }
@@ -428,7 +429,7 @@ fn emit_proc_assignment(
             return Ok(());
         }
         let start = compiler.nodes.len();
-        let var = match compiler.emit_expr(lhs.clone())? {
+        let var = match compiler.emit_place(op, lhs.clone())? {
             EvalKind::Var(var) if is_writable(&var) => var,
             EvalKind::Field(builder, field) => builder.get_field(DMString(field.into())),
             _ => return Err(CompileError::ExpectedLValue),
@@ -462,7 +463,7 @@ fn emit_proc_assignment(
         // the cache, saved around the new value if that uses the cache too)
         AssignOp::AndAssign | AssignOp::OrAssign => {
             let end = compiler.new_label();
-            let (var, cached) = match compiler.emit_expr(lhs.clone())? {
+            let (var, cached) = match compiler.emit_place(op, lhs.clone())? {
                 EvalKind::ListRef => {
                     compiler.emit_ins(Instruction::SetVar(Variable::CacheKey));
                     compiler.emit_ins(Instruction::SetVar(Variable::Cache));
@@ -512,7 +513,7 @@ fn emit_proc_assignment(
         | AssignOp::RShiftAssign => {
             let kind = compiler.emit_expr(rhs.clone())?;
             compiler.emit_move_to_stack(kind)?;
-            let var = match compiler.emit_expr(lhs.clone())? {
+            let var = match compiler.emit_place(op, lhs.clone())? {
                 EvalKind::ListRef => {
                     compiler.emit_ins(Instruction::SetVar(Variable::CacheKey));
                     compiler.emit_ins(Instruction::SetVar(Variable::Cache));

@@ -1776,6 +1776,9 @@ fn emit_expr_statement_inner(compiler: &mut Compiler, expr: &Expression) -> Resu
             }
             emit_value(compiler, rhs)?;
             compiler.implicit_type = None;
+            // (no line for the place of `-=` and the like; `=` to a list
+            // element gets one)
+            compiler.place = *op != AssignOp::Assign;
             let kind = compiler.emit_inner_expr(unparenthesised(lhs))?;
             if *op == AssignOp::Assign {
                 if kind == EvalKind::ListRef {

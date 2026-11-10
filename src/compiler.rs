@@ -325,6 +325,10 @@ struct Compiler<'a> {
     /// Set after a var default's line is recorded: the next compound term
     /// records its own line, whatever it is (see `compound_line`)
     line_pending: bool,
+    /// Set while compiling the place `-=` and the like write to: DreamMaker
+    /// records no line for it (it does for what's inside, like `L[f()]`'s
+    /// call, and for `=`'s place). Taken by the next expression compiled.
+    pub(super) place: bool,
     /// Set while compiling `call(x, __PROC__)`'s proc, where builds before
     /// 515.1644 take `__PROC__`
     proc_macro_ok: bool,
@@ -360,6 +364,7 @@ impl<'a> Compiler<'a> {
             global_field: false,
             other_file: false,
             line_pending: false,
+            place: false,
             proc_macro_ok: false,
             no_fold: false,
             list_elem_type: None,
@@ -583,12 +588,13 @@ impl<'a> Compiler<'a> {
     fn emit_inner_expr(&mut self, expr: Expression) -> Result<EvalKind, CompileError> {
         // (see `regroup_root`)
         let root = std::mem::take(&mut self.regroup_root);
+        let place = std::mem::take(&mut self.place);
         if self.proc.is_some() {
             // A compound term on a later line than the last recorded one gets
             // its own line record, as in a list() written over several lines,
             // and so does the first one after a var default whatever its line
             // (DreamMaker goes by the source: one that folds counts too)
-            if let Some(line) = compound_line(&expr) {
+            if let Some(line) = compound_line(&expr).filter(|_| !place) {
                 if self.line_pending || self.last_line.is_some_and(|l| line > l) {
                     self.emit_ins(Instruction::DbgLine(line));
                 }
@@ -803,6 +809,12 @@ impl<'a> Compiler<'a> {
                 Ok(kind)
             }
         }
+    }
+
+    /// Compiles the place an assignment writes to (see `place`)
+    fn emit_place(&mut self, op: dreammaker::ast::AssignOp, expr: Expression) -> Result<EvalKind, CompileError> {
+        self.place = op != dreammaker::ast::AssignOp::Assign;
+        self.emit_expr(expr)
     }
 
     fn emit_expr(&mut self, expr: Expression) -> Result<EvalKind, CompileError> {

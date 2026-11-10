@@ -858,3 +858,13 @@ fn assert_keeps_raw_strings_as_written() {
     let code = compile("/proc/f(a)\n\tASSERT(a == @{\"brace\"} || a == @'one')\n", "", "f");
     assert!(code.contains(r#"PushVal "a == @{\"brace\"} || a == @'one'""#), "{code}");
 }
+
+#[test]
+fn the_place_of_an_augmented_assignment_records_no_line() {
+    // After a default's line, `L["b"] -= ...`'s place doesn't name the
+    // statement's line again (`=`'s does)
+    let lines = |code: Vec<String>| code.into_iter().filter(|l| l.starts_with("DbgLine")).collect::<Vec<_>>();
+    let src = |op: &str| format!("/proc/f(list/L)\n\tL[\"b\"] {op} /datum/u::x\n/datum/u\n\tvar/x = 3\n");
+    assert_eq!(lines(compile_with_lines(&src("-="))), ["DbgLine 2", "DbgLine 4"]);
+    assert_eq!(lines(compile_with_lines(&src("="))), ["DbgLine 2", "DbgLine 4", "DbgLine 2"]);
+}
