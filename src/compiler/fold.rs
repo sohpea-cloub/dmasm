@@ -497,6 +497,10 @@ fn binary_value(c: &Compiler, expr: &Expression) -> Option<Constant> {
             let b = value(c, rhs)?;
             match (a, b) {
                 (Constant::Number(a), Constant::Number(b)) => {
+                    if is_bit_op(*op) {
+                        warn_bits(c, a);
+                        warn_bits(c, b);
+                    }
                     numbers(*op, a, b).map(Constant::Number)
                 }
                 (Constant::Text(mut a), Constant::Text(b)) if *op == BinaryOp::Add => {
@@ -514,6 +518,20 @@ fn binary_value(c: &Compiler, expr: &Expression) -> Option<Constant> {
             }
         }
         _ => None,
+    }
+}
+
+fn is_bit_op(op: BinaryOp) -> bool {
+    matches!(op, BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::LShift | BinaryOp::RShift)
+}
+
+/// A constant beyond the 32-bit range next to a bit operator: DreamMaker
+/// makes erratic bits of it, by build (an expected difference)
+pub(super) fn warn_bits(c: &Compiler, x: f32) {
+    if !(-2147483648.0..2147483648.0).contains(&x) {
+        c.warn(&format!(
+            "the constant {x} next to a bit operator is out of the 32-bit range: DreamMaker gives it other bits than dmasm does"
+        ));
     }
 }
 

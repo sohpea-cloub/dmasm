@@ -303,6 +303,7 @@ pub(super) fn emit(
                 match super::fold::number(compiler, &operand) {
                     // (only on the left)
                     Some(n) if bit_op && i == 0 => {
+                        super::fold::warn_bits(compiler, n);
                         compiler.emit_number(super::fold::bits(n) as f32)
                     }
                     // A const on the left of `*` is its value, not its global

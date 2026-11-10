@@ -335,6 +335,10 @@ struct Compiler<'a> {
     /// Set while compiling an expression with nothing folded (to see what
     /// DreamMaker sees in its source)
     no_fold: bool,
+    /// Where the code may not do what DreamMaker's would (see
+    /// `CompiledProc::warnings`); behind a cell, as folding only reads the
+    /// compiler
+    warnings: std::cell::RefCell<Vec<String>>,
     /// The element type of the `/list/T` var a follow starts from, for its
     /// first index. Taken by `follow::emit_typed`.
     list_elem_type: Option<dreammaker::objtree::TypeRef<'a>>,
@@ -365,6 +369,7 @@ impl<'a> Compiler<'a> {
             other_file: false,
             line_pending: false,
             place: false,
+            warnings: Default::default(),
             proc_macro_ok: false,
             no_fold: false,
             list_elem_type: None,
@@ -850,6 +855,18 @@ impl<'a> Compiler<'a> {
         ) = (saved.0, saved.1, saved.2, saved.3, saved.4, saved.5);
         self.other_file = false;
         found
+    }
+
+    /// Notes a warning about the statement being compiled (once)
+    fn warn(&self, text: &str) {
+        let text = match self.last_line {
+            Some(line) => format!("line {line}: {text}"),
+            None => text.to_owned(),
+        };
+        let mut warnings = self.warnings.borrow_mut();
+        if !warnings.contains(&text) {
+            warnings.push(text);
+        }
     }
 
     /// Compiles the place an assignment writes to (see `place`)

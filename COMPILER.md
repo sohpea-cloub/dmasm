@@ -95,6 +95,11 @@ These are accepted as equivalent by the comparison:
   `/obj/structure/mineral_door/wood/open`); SpacemanDMM makes the subtype the code means.
 - **Empty procs at the end of a file.** DreamMaker's debug info names the next file
   included as theirs (debug info only).
+- **Constants beyond 32 bits at a bit operator.** For `&`, `|`, `^`, `<<` and `>>`
+  DreamMaker keeps 24 bits of a constant; out of the 32-bit range it makes them
+  erratically, and not the same on every build (`-3e9` is 1, `2147483648` is 0, `1e10`
+  16777215, `-2147483904` 0 on 515 and 1 on 516). The compiler takes the low 24 bits of
+  the nearest 32-bit integer, and warns (`CompiledProc::warnings`, a reload's warnings).
 
 ## How DreamMaker compiles things (that the compiler copies)
 

@@ -43,6 +43,9 @@ pub struct CompiledProc {
     pub params: Vec<String>,
     /// Static locals (and local consts), in the order they're declared.
     pub statics: Vec<StaticLocal>,
+    /// Where the code may not do what DreamMaker's would (expected
+    /// differences, COMPILER.md)
+    pub warnings: Vec<String>,
 }
 
 /// A static local: a global the world sets up when it starts.
@@ -262,6 +265,7 @@ pub fn compile_proc(source: &ProcSource) -> Result<CompiledProc, CompileError> {
     compiler.emit_ins(Instruction::End);
     let ctx = compiler.proc.take().unwrap();
     Ok(CompiledProc {
+        warnings: compiler.warnings.into_inner(),
         nodes: compiler.nodes,
         locals: ctx.locals,
         params,

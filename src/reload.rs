@@ -66,6 +66,10 @@ pub struct ProcReload {
     /// Its static locals. Those the running proc doesn't have yet are new,
     /// and start as `value`.
     pub statics: Vec<StaticVar>,
+    /// Where the new code may not do what DreamMaker's would (they go to
+    /// `Changes::warnings` too)
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub warnings: Vec<String>,
 }
 
 /// A static local (or local const) of a proc.
@@ -439,6 +443,15 @@ pub struct Changes {
 }
 
 impl Changes {
+    /// The new code's warnings, among the reload's
+    fn collect_warnings(&mut self) {
+        for reload in &self.reloads {
+            for warning in &reload.warnings {
+                self.warnings.push(format!("{}: {warning}", reload.proc));
+            }
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.reloads.is_empty()
             && self.settings.is_empty()
@@ -721,6 +734,7 @@ impl Snapshot {
                 None => self.patched.remove(&key),
             };
         }
+        changes.collect_warnings();
         Ok(FileReload {
             changes,
             patched: pairs
@@ -903,6 +917,7 @@ impl Snapshot {
             params: params(value),
             settings: None,
             statics,
+            warnings: compiled.warnings,
         })
     }
 
@@ -1067,6 +1082,7 @@ impl Snapshot {
             params: vec![],
             settings: Some(ProcSettings::default()),
             statics: vec![],
+            warnings: compiled.warnings,
         })
     }
 
@@ -1403,6 +1419,7 @@ pub fn diff(old: &Snapshot, new: &Snapshot, changed_files: Option<&HashSet<PathB
     }
 
     const_users(old, new, &realigned, &mut changes);
+    changes.collect_warnings();
     changes
 }
 

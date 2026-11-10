@@ -1467,3 +1467,13 @@ fn a_moved_default_read_with_scope_needs_the_full_read() {
     let reload = old.reload_file(&world.dir, file).unwrap();
     assert_eq!(reloaded(&reload.changes), [key("/g", 0)]);
 }
+
+#[test]
+fn a_constant_beyond_32_bits_at_a_bit_operator_is_warned_about() {
+    // DreamMaker gives such a constant erratic bits (an expected difference)
+    let changes = changes("big-bits", "/proc/f(x)\n\treturn x\n", "/proc/f(x)\n\treturn (-1e10) ^ x\n");
+    assert_eq!(reloaded(&changes), [key("/f", 0)]);
+    assert!(changes.warnings.iter().any(|w| w.starts_with("/f: line 2: the constant -10000000000 next to a bit operator")), "{:?}", changes.warnings);
+    let changes = changes_of("small-bits", "/proc/f(x)\n\treturn x\n", "/proc/f(x)\n\treturn (-1e6) ^ x\n");
+    assert!(changes.warnings.is_empty(), "{:?}", changes.warnings);
+}
