@@ -136,7 +136,20 @@ fn a_const_change_recompiles_its_users() {
         .replace("SIZE = 2", "SIZE = 5");
     let changes = changes("const", before, &after);
     assert!(changes.refused.is_empty(), "{:?}", changes.refused);
-    assert_eq!(changes.consts, ["SIZE"]);
+    assert_eq!(changes.consts, ["LIMIT", "SIZE"]);
+    // Both are globals, set to their new values now
+    let set: Vec<(&str, &str, Option<ConstValue>)> = changes
+        .redeclared
+        .iter()
+        .map(|r| (r.type_path.as_str(), r.var.as_str(), r.value.clone()))
+        .collect();
+    assert_eq!(
+        set,
+        [
+            ("", "LIMIT", Some(ConstValue::Number(4.0))),
+            ("/datum/thing", "SIZE", Some(ConstValue::Number(5.0)))
+        ]
+    );
     // d names SIZE only in a string, so its code is the same
     assert_eq!(reloaded(&changes), [key("/datum/thing/c", 0)]);
     // With a line above it, the new code has its new lines: it isn't moved
@@ -152,15 +165,33 @@ fn a_const_change_recompiles_its_users() {
         moved,
         [key("/a", 0), key("/b", 0), key("/datum/thing/d", 0)]
     );
-    // A global const is read from its global by the code that uses it
-    assert!(
-        changes
-            .warnings
-            .iter()
-            .any(|w| w.contains("LIMIT is a global var")),
-        "{:?}",
-        changes.warnings
-    );
+    // (no "only after a restart" warning for a const)
+    assert!(changes.warnings.is_empty(), "{:?}", changes.warnings);
+}
+
+#[test]
+fn a_new_const_is_a_global() {
+    let before = "/datum/thing
+	var/x = 1
+/datum/thing/sub
+";
+    let after = "/datum/thing
+	var/x = 1
+	var/const/K = 7
+/datum/thing/sub
+/datum/other
+	var/const/J = 2
+";
+    let changes = changes("new-const", before, after);
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    let new: Vec<(&str, &str, u32)> = changes
+        .new_vars
+        .iter()
+        .map(|v| (v.type_path.as_str(), v.var.as_str(), v.flags))
+        .collect();
+    assert_eq!(new, [("/datum/other", "J", 3), ("/datum/thing", "K", 3)]);
+    // not a default in the types' var tables
+    assert!(changes.var_defaults.is_empty(), "{:?}", changes.var_defaults);
 }
 
 #[test]

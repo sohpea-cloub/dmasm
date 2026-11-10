@@ -367,7 +367,7 @@ pub struct NewVar {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Redeclared {
-    /// The type that declares it
+    /// The type that declares it ("" for a global const whose value changed)
     pub type_path: String,
     pub var: String,
     /// As for a new var: 1 static (or global), 2 const, 4 tmp.
@@ -2575,8 +2575,30 @@ fn var_default(
     };
     let flags = declaration.get().var_type.flags;
     let builtin = declaration.get().location.file == FileId::BUILTINS;
+    // A global const is set now (no code writes it), and the code it was
+    // folded into compiled again
+    if n.is_root() && flags.is_const() && !is_new {
+        if !changes.consts.iter().any(|c| c == name) {
+            changes.consts.push(name.to_owned());
+        }
+        if let Some(var) = n.get().vars.get(name) {
+            match static_initial(new, n, var) {
+                Ok((value, init)) => changes.redeclared.push(Redeclared {
+                    type_path: String::new(),
+                    var: name.to_owned(),
+                    flags: byond_flags(flags, true),
+                    value: Some(value),
+                    init,
+                }),
+                Err(e) => changes
+                    .refused
+                    .push(format!("{shown}: const {name}'s value doesn't compile: {e}")),
+            }
+        }
+        return;
+    }
     // A new var starts with its value; an existing global keeps the one it
-    // has now (a global const too: code reads it from the global)
+    // has now
     if n.is_root() || flags.is_static() {
         if !is_new {
             changes.warnings.push(format!(
@@ -2585,11 +2607,35 @@ fn var_default(
         }
         return;
     }
-    // A type's const is compiled into the code that uses it, which is
-    // compiled again (see `const_users`)
-    if flags.is_const() && !is_new {
+    // A type's const is a global: a new one starts with its value, like a
+    // static. A changed one is set now (no code writes it), and the code it
+    // was folded into is compiled again (see `const_users`)
+    if flags.is_const() {
+        if is_new {
+            return;
+        }
         if !changes.consts.iter().any(|c| c == name) {
             changes.consts.push(name.to_owned());
+        }
+        let declaring = declaration.ty();
+        let path = declaring.get().path.clone();
+        if changes.redeclared.iter().any(|r| r.type_path == path && r.var == name) {
+            return;
+        }
+        let Some(var) = declaring.get().vars.get(name) else {
+            return;
+        };
+        match static_initial(new, declaring, var) {
+            Ok((value, init)) => changes.redeclared.push(Redeclared {
+                type_path: path,
+                var: name.to_owned(),
+                flags: byond_flags(flags, false),
+                value: Some(value),
+                init,
+            }),
+            Err(e) => changes
+                .refused
+                .push(format!("{shown}: const {name}'s value doesn't compile: {e}")),
         }
         return;
     }
