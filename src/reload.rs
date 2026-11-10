@@ -2613,9 +2613,16 @@ fn new_var(
             Some(value) => (value, None),
             // The init proc sets it on new instances
             None => {
-                if !new_type {
+                // (a built world gives initial() of it BYOND's own placeholder;
+                // giving the new var one would give it to the instances that
+                // exist already too)
+                if new_type {
                     changes.warnings.push(format!(
-                        "{shown}: new var {name}'s default isn't a constant, so instances that exist already have it as null"
+                        "{shown}: new var {name}'s default isn't a constant, so initial() of it is null until a restart"
+                    ));
+                } else {
+                    changes.warnings.push(format!(
+                        "{shown}: new var {name}'s default isn't a constant, so instances that exist already have it as null, and initial() of it is null until a restart"
                     ));
                 }
                 (ConstValue::Null, None)

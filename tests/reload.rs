@@ -1011,6 +1011,12 @@ fn defaults_that_arent_constants_change_the_init_procs() {
     );
     assert_eq!(second.var_defaults.len(), 1, "{:?}", second.var_defaults);
     assert_eq!(second.var_defaults[0].types, ["/datum/a/c"]);
+    // (initial() of the new var is null, not BYOND's placeholder: warned)
+    assert!(
+        second.warnings.iter().any(|w| w.contains("new var k's default isn't a constant") && w.contains("initial() of it is null")),
+        "{:?}",
+        second.warnings
+    );
 }
 
 #[test]
