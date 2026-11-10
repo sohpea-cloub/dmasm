@@ -609,6 +609,30 @@ impl<'a> Compiler<'a> {
             }
             Expression::AssignOp { op, lhs, rhs } => assignment::emit(self, op, *lhs, *rhs),
 
+            // `&(x)` is `&x`, and `*(p)` is `*p` (but `*(&x)` reads the
+            // pointer it makes)
+            Expression::Base { term, follow }
+                if self.proc.is_some()
+                    && match follow.first().map(|f| &f.elem) {
+                        Some(Follow::Unary(dreammaker::ast::UnaryOp::Reference)) => true,
+                        Some(Follow::Unary(dreammaker::ast::UnaryOp::Dereference)) => matches!(
+                            &term.elem,
+                            dreammaker::ast::Term::Expr(inner) if matches!(&**inner,
+                                Expression::Base { follow, .. }
+                                    if !follow.iter().any(|f| matches!(f.elem, Follow::Unary(_))))
+                        ),
+                        _ => false,
+                    }
+                    && matches!(&term.elem, dreammaker::ast::Term::Expr(inner)
+                        if matches!(**inner, Expression::Base { .. })) =>
+            {
+                let dreammaker::ast::Term::Expr(inner) = term.elem else { unreachable!() };
+                let Expression::Base { term: inner_term, follow: inner_follow } = *inner else {
+                    unreachable!()
+                };
+                let follow = inner_follow.iter().chain(follow.iter()).cloned().collect();
+                self.emit_expr(Expression::Base { term: inner_term, follow })
+            }
             Expression::Base { term, follow } => {
                 let unspanned_follows: Vec<Follow> =
                     follow.iter().map(|f| f.elem.clone()).collect();

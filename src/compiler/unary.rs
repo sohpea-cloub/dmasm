@@ -48,6 +48,12 @@ fn emit_single(
         | UnaryOp::Dereference => {
             // These ops require an l-value
             let var = match kind {
+                // a computed pointer (`*(&x)`) is kept in cache_key
+                EvalKind::Stack if op == UnaryOp::Dereference => {
+                    compiler.emit_ins(Instruction::SetVar(Variable::CacheKey));
+                    Variable::CacheKey
+                }
+
                 EvalKind::Var(var) if is_writable(&var) => var,
 
                 EvalKind::Field(builder, field) => builder.get_field(DMString(field.into())),
@@ -66,7 +72,7 @@ fn emit_single(
                 UnaryOp::PostIncr => compiler.emit_ins(Instruction::PostInc(var)),
                 UnaryOp::PreDecr => compiler.emit_ins(Instruction::PreDec(var)),
                 UnaryOp::PostDecr => compiler.emit_ins(Instruction::PostDec(var)),
-                UnaryOp::Reference => return_kind = EvalKind::Var(Variable::PtrRef(Box::new(var))),
+                UnaryOp::Reference => return_kind = EvalKind::Var(reference(var)),
                 UnaryOp::Dereference => {
                     return_kind = EvalKind::Var(Variable::PtrDeref(Box::new(var)))
                 }
@@ -76,4 +82,13 @@ fn emit_single(
     }
 
     Ok(return_kind)
+}
+
+/// `&x`: a pointer to x. For a field (`&t.v`) DreamMaker finds the holder
+/// as usual and takes the field's address: `cache = t; &cache["v"]`.
+fn reference(var: Variable) -> Variable {
+    match var {
+        Variable::SetCache(holder, field) => Variable::SetCache(holder, Box::new(reference(*field))),
+        var => Variable::PtrRef(Box::new(var)),
+    }
 }

@@ -505,3 +505,25 @@ fn writing_through_a_pointer() {
     );
     assert_has(&code, &["Inc *local(0)", "PushInt 6", "SetVar *local(0)"]);
 }
+
+#[test]
+fn pointer_to_a_field() {
+    // the & goes on the field, after finding its holder
+    let src = "/datum/t\n\tvar/v = 1\n/proc/f()\n\tvar/datum/t/T = new\n\tvar/p = &T.v\n\treturn *p\n";
+    assert_has(&compile(src, "", "f"), &["GetVar cache = local(0); &cache[\"v\"]", "SetVar local(1)"]);
+    let src = "/datum/t\n\tvar/v = 1\n\tproc/m()\n\t\tvar/p = &src.v\n\t\treturn *p\n";
+    assert_has(&compile(src, "/datum/t", "m"), &["GetVar cache = src; &cache[\"v\"]", "SetVar local(0)"]);
+    // `&(T.v)` is the same; `*(&T.v)` reads the pointer it makes
+    let src = "/datum/t\n\tvar/v = 1\n/proc/f()\n\tvar/datum/t/T = new\n\tvar/p = &(T.v)\n\treturn *(&T.v)\n";
+    assert_has(
+        &compile(src, "", "f"),
+        &[
+            "GetVar cache = local(0); &cache[\"v\"]",
+            "SetVar local(1)",
+            "GetVar &cache[\"v\"]",
+            "SetVar cache_key",
+            "GetVar *cache_key",
+        ],
+    );
+    assert_has(&compile("/proc/f(a)\n\tvar/p = &a\n\treturn *(p)\n", "", "f"), &["GetVar *local(0)", "Ret"]);
+}
