@@ -163,10 +163,13 @@ pub(super) fn emit(compiler: &mut Compiler<'_>, term: Term) -> Result<EvalKind, 
                 });
             }
 
-            // Push LHS
-            for expr in lhs {
-                let kind = compiler.emit_expr(expr)?;
-                compiler.emit_move_to_stack(kind)?;
+            // Push LHS (`call(src, __PROC__)` is allowed before 515.1644, where
+            // `__PROC__` otherwise isn't)
+            for (i, expr) in lhs.iter().enumerate() {
+                compiler.proc_macro_ok = lhs_len == 2 && i == 1;
+                let kind = compiler.emit_expr(expr.clone());
+                compiler.proc_macro_ok = false;
+                compiler.emit_move_to_stack(kind?)?;
             }
 
             // Push RHS (as a proc's: `(x = 1)` is an assignment)
@@ -549,7 +552,9 @@ pub(super) fn emit(compiler: &mut Compiler<'_>, term: Term) -> Result<EvalKind, 
             Ok(EvalKind::Stack)
         }
         Term::__PROC__ if compiler.proc.is_some() => {
-            super::versions::require(compiler.byond, super::versions::PROC_MACRO, "__PROC__")?;
+            if !compiler.proc_macro_ok {
+                super::versions::require(compiler.byond, super::versions::PROC_MACRO, "__PROC__")?;
+            }
             let path = compiler.proc.as_ref().unwrap().proc_path.clone();
             compiler.emit_ins(Instruction::PushVal(Value::Path(path)));
             Ok(EvalKind::Stack)

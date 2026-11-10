@@ -322,6 +322,9 @@ struct Compiler<'a> {
     /// Set while the debug info names another file (a var default's): the
     /// next line recorded names the proc's own again first
     other_file: bool,
+    /// Set while compiling `call(x, __PROC__)`'s proc, where builds before
+    /// 515.1644 take `__PROC__`
+    proc_macro_ok: bool,
     /// Set while compiling an expression with nothing folded (to see what
     /// DreamMaker sees in its source)
     no_fold: bool,
@@ -353,6 +356,7 @@ impl<'a> Compiler<'a> {
             regroup_chain: false,
             global_field: false,
             other_file: false,
+            proc_macro_ok: false,
             no_fold: false,
             list_elem_type: None,
         }

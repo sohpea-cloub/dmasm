@@ -178,3 +178,14 @@ fn log_folds_in_double_precision_before_515_1644() {
     assert_eq!(ret(ByondVersion::new(515, 1643), "log(1.5, 255.519)"), "PushVal 13.671452");
     assert_eq!(ret(ByondVersion::new(515, 1644), "log(1.5, 255.519)"), "PushVal 13.6714525");
 }
+
+#[test]
+fn proc_macro_in_call_before_515_1644() {
+    // `call(src, __PROC__)` and `nameof(__PROC__)` compile on 515.1637; the
+    // macro elsewhere doesn't
+    let b = ByondVersion::new(515, 1637);
+    let code = compile_for(b, "/proc/f(a)\n\tcall(a, __PROC__)(a)\n").unwrap();
+    assert!(code.contains("PushVal /proc/f"), "{code}");
+    assert_eq!(ret(b, "nameof(__PROC__)"), "PushVal \"f\"");
+    assert!(compile_for(b, "/proc/f(a)\n\treturn __PROC__\n").is_err());
+}
