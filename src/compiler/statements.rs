@@ -894,7 +894,7 @@ fn constant_value(compiler: &mut Compiler, expr: &Expression) -> Result<Value, C
         }
         Some(super::fold::Constant::Null) => return Ok(Value::Null),
         Some(super::fold::Constant::Path(p)) => return Ok(Value::Path(p)),
-        None => {}
+        Some(super::fold::Constant::New) | None => {}
     }
     if let Expression::Base { term, follow } = strip_parens(expr) {
         if follow.is_empty() {

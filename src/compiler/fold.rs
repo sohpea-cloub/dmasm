@@ -14,6 +14,10 @@ pub(super) enum Constant {
     Text(Vec<u8>),
     /// A type path, which only survives `&&`, `||`, `!` and `? :`.
     Path(String),
+    /// `new /T` with no arguments: DreamMaker takes it as true in a test
+    /// (`new /T ? a : b` is a, without making anything), and keeps the code
+    /// where the value itself is used (`new /T || a`).
+    New,
 }
 
 impl Constant {
@@ -22,7 +26,7 @@ impl Constant {
             Constant::Null => false,
             Constant::Number(n) => *n != 0.0,
             Constant::Text(t) => !t.is_empty(),
-            Constant::Path(_) => true,
+            Constant::Path(_) | Constant::New => true,
         }
     }
 }
@@ -91,7 +95,7 @@ pub(super) fn constant(c: &Compiler, expr: &Expression) -> Option<Constant> {
             }
         }
     }
-    value(c, expr)
+    value(c, expr).filter(|v| *v != Constant::New)
 }
 
 /// The value of a constant expression.
@@ -241,6 +245,9 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
         Term::Float(f) => Constant::Number(*f),
         Term::Null => Constant::Null,
         Term::Prefab(prefab) if prefab.vars.is_empty() => Constant::Path(prefab.path.to_string()),
+        Term::NewPrefab { prefab, args } if prefab.vars.is_empty() && args.as_ref().is_none_or(|a| a.is_empty()) => {
+            Constant::New
+        }
         Term::String(s) => Constant::Text(super::strings::parse(s).ok()?.0),
         Term::Expr(inner) => value(c, inner)?,
         // Math builtins of constants (not min and max, which DreamMaker leaves)

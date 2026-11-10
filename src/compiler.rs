@@ -579,7 +579,8 @@ impl<'a> Compiler<'a> {
                     self.emit_ins(Instruction::PushVal(operands::Value::Path(path)));
                     return Ok(EvalKind::Stack);
                 }
-                None => {}
+                // (`constant` leaves it to be made)
+                Some(fold::Constant::New) | None => {}
             }
             // A term on a later line than the last recorded one gets its own
             // line record, as in a list() written over several lines

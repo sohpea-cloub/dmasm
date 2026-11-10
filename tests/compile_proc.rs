@@ -527,3 +527,17 @@ fn pointer_to_a_field() {
     );
     assert_has(&compile("/proc/f(a)\n\tvar/p = &a\n\treturn *(p)\n", "", "f"), &["GetVar *local(0)", "Ret"]);
 }
+
+#[test]
+fn new_without_arguments_is_true_in_a_test() {
+    // DreamMaker takes `new /T` as true without making anything...
+    let src = "/datum/t\n/proc/f(a, b)\n\treturn (new /datum/t ? a : b)\n";
+    assert_eq!(compile(src, "", "f"), "GetVar arg(0)\nRet\nEnd");
+    let src = "/datum/t\n/proc/f(a, b)\n\treturn !(new /datum/t()) || (new /datum/t && a)\n";
+    assert_eq!(compile(src, "", "f"), "GetVar arg(0)\nRet\nEnd");
+    // ...but makes it where the value is used, and when it has arguments
+    let src = "/datum/t\n/proc/f(a, b)\n\treturn (new /datum/t || a)\n";
+    assert_has(&compile(src, "", "f"), &["PushVal /datum/t", "New 0", "Ret"]);
+    let src = "/datum/t\n/proc/f(a, b)\n\treturn (new /datum/t(a) ? a : b)\n";
+    assert_has(&compile(src, "", "f"), &["PushVal /datum/t", "GetVar arg(0)", "New 1", "Test"]);
+}
