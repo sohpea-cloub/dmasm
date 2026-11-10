@@ -548,7 +548,11 @@ fn emit_safe<'a>(
         let write = super::statements::SafeWrite::Change(&step);
         if let Some(chain) = super::statements::safe_chain(&follows) {
             if chain.writable(&write, true) {
-                super::statements::emit_safe_chain_write(compiler, chain, None, None, write, true)?;
+                let indexed = matches!(follows.last(), Some(Follow::Index(..)));
+                let static_var = super::statements::static_member(compiler, ty, &follows, indexed);
+                super::statements::emit_safe_chain_write(
+                    compiler, chain, None, static_var, None, write, true,
+                )?;
                 return Ok(EvalKind::Stack);
             }
         }

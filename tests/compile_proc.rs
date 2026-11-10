@@ -541,3 +541,33 @@ fn new_without_arguments_is_true_in_a_test() {
     let src = "/datum/t\n/proc/f(a, b)\n\treturn (new /datum/t(a) ? a : b)\n";
     assert_has(&compile(src, "", "f"), &["PushVal /datum/t", "GetVar arg(0)", "New 1", "Test"]);
 }
+
+#[test]
+fn writing_a_static_var_through_safe_access() {
+    let src = "/datum/t\n\tvar/static/s = 2\n\tvar/datum/t/n\n/proc/f(datum/t/a, b)\n\ta?.s = b\n\ta?.n.s += b\n\tb = a?.s++\n";
+    assert_has(
+        &compile(src, "", "f"),
+        &[
+            "GetVar arg(0)",
+            "SetCachePopJmpIfNull LAB_0001",
+            "PushCache",
+            "GetVar arg(1)",
+            "PopCache",
+            "SetVar global(\"s\")",
+            "LAB_0001:",
+            "GetVar arg(0)",
+            "SetCachePopJmpIfNull LAB_0004",
+            "PushCache",
+            "GetVar arg(1)",
+            "PopCache",
+            "AugAdd global(\"s\")",
+            "LAB_0004:",
+            "GetVar arg(0)",
+            "SetCacheJmpIfNull LAB_0007",
+            "PushCache",
+            "PopCache",
+            "PostInc global(\"s\")",
+        ],
+    );
+}
+

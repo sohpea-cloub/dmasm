@@ -1376,11 +1376,13 @@ impl SafeChain {
 /// A write to `a?.b`, with `a` on the stack: nothing happens when a link is
 /// null. The value (if any) comes before the write. As an expression
 /// (`value_form`), the result is what the write leaves, or null. The chain
-/// must be `writable`. `place` is the whole place, for its type.
+/// must be `writable`. `place` is the whole place, for its type; `static_var`
+/// the global it is when it's a static var.
 pub(super) fn emit_safe_chain_write(
     compiler: &mut Compiler,
     chain: SafeChain,
     place: Option<&Expression>,
+    static_var: Option<Variable>,
     value: Option<&Expression>,
     write: SafeWrite,
     value_form: bool,
@@ -1434,6 +1436,9 @@ pub(super) fn emit_safe_chain_write(
         compiler.implicit_type = None;
     }
     let field_var = |fields: &[String]| {
+        if let Some(var) = &static_var {
+            return var.clone();
+        }
         if fields.is_empty() {
             return Variable::Cache;
         }
@@ -1498,6 +1503,48 @@ pub(super) fn emit_safe_chain_write(
     Ok(())
 }
 
+/// The global a place ending in a static var's field is (`a?.s`, or the list
+/// in `a?.s[k]` when `indexed`).
+fn static_place(compiler: &Compiler, place: &Expression, indexed: bool) -> Option<Variable> {
+    let Expression::Base { term, follow } = place else {
+        return None;
+    };
+    let base = Expression::Base {
+        term: term.clone(),
+        follow: Default::default(),
+    };
+    let follow: Vec<Follow> = follow.iter().map(|f| f.elem.clone()).collect();
+    static_member(compiler, super::procs::expr_type(compiler, &base), &follow, indexed)
+}
+
+/// The same for the fields `follow` of a value of type `ty`.
+pub(super) fn static_member(
+    compiler: &Compiler,
+    ty: Option<dreammaker::objtree::TypeRef>,
+    follow: &[Follow],
+    indexed: bool,
+) -> Option<Variable> {
+    let follow = &follow[..follow.len().checked_sub(indexed as usize)?];
+    let (Follow::Field(_, name), holder) = (follow.last()?, &follow[..follow.len() - 1]) else {
+        return None;
+    };
+    let mut ty = ty?;
+    for f in holder {
+        let Follow::Field(_, field) = f else {
+            return None;
+        };
+        ty = super::procs::declared_type(compiler, &super::procs::member_var(ty, field.as_str())?.get().var_type)?;
+    }
+    let decl = super::procs::member_var(ty, name.as_str())?;
+    if !super::procs::is_global_member(&decl) {
+        return None;
+    }
+    Some(Variable::Global(crate::operands::GlobalVar::named(
+        name.as_str().as_bytes(),
+        Some(decl.ty().get().path.clone()),
+    )))
+}
+
 /// A write to the place `a?.b`. False if it can't be written this way.
 pub(super) fn emit_safe_write(
     compiler: &mut Compiler,
@@ -1513,7 +1560,9 @@ pub(super) fn emit_safe_write(
         return Ok(false);
     }
     emit_value(compiler, &base)?;
-    emit_safe_chain_write(compiler, chain, Some(place), value, write, value_form)?;
+    // A static var is written directly (`a?.n.s = x` doesn't read a.n)
+    let static_var = static_place(compiler, place, chain.index.is_some());
+    emit_safe_chain_write(compiler, chain, Some(place), static_var, value, write, value_form)?;
     Ok(true)
 }
 
