@@ -629,3 +629,10 @@ fn safe_access_to_a_const_is_not_folded() {
         &["GetVar arg(0)", "SetCacheJmpIfNull LAB_0003", "GetVar global(\"k\")", "LAB_0003:", "Test"],
     );
 }
+
+#[test]
+fn hex_escapes_are_characters() {
+    // `\xe9` is é, stored as UTF-8
+    let code = compile("/proc/f()\n\treturn \"\\xe9t\\x41\"\n", "", "f");
+    assert_has(&code, &["PushVal \"étA\"", "Ret"]);
+}

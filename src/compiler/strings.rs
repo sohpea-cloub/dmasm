@@ -510,13 +510,15 @@ impl TextBuilder {
                 b'\'' | b'\\' | b'[' | b']' | b'{' | b'}' => self.literal_bytes(&[next]),
                 // `\ ` is nothing (it ends a line continuation's indent)
                 b' ' => {}
-                // \xHH: that byte
+                // \xHH: the character U+00HH, in UTF-8 (`\xe9` is é)
                 b'x' if bytes.len() >= i + 2
                     && bytes[i..i + 2].iter().all(|b| b.is_ascii_hexdigit()) =>
                 {
-                    let byte = u8::from_str_radix(&data[i..i + 2], 16).unwrap();
+                    let c = char::from(u8::from_str_radix(&data[i..i + 2], 16).unwrap());
                     i += 2;
-                    self.text_byte(byte);
+                    for &byte in c.encode_utf8(&mut [0; 2]).as_bytes() {
+                        self.text_byte(byte);
+                    }
                 }
                 other => {
                     return Err(StringError::UnsupportedEscapeSequence(
