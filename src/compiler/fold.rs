@@ -204,6 +204,10 @@ fn static_const(
     steps: &[dreammaker::ast::Spanned<Follow>],
 ) -> Option<Constant> {
     let ctx = c.proc.as_ref()?;
+    // (a debugger's code doesn't have the world's types to go by)
+    if c.expr_scope.is_some() {
+        return None;
+    }
     let ty = match term {
         Term::Prefab(prefab) if prefab.vars.is_empty() => ctx.tree.find(&prefab.path.to_string()),
         other => super::procs::term_type(c, other),

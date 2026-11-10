@@ -195,16 +195,41 @@ pub fn compile_proc(source: &ProcSource) -> Result<CompiledProc, CompileError> {
         .filter(|p| !p.absolute && p.name.as_str() != "...")
         .collect();
     let params: Vec<String> = declared.iter().map(|p| p.name.as_str().to_owned()).collect();
+    let param_types = declared
+        .iter()
+        .map(|p| p.var_type.type_path.to_string())
+        .collect();
 
-    let ctx = ProcCtx {
+    let mut compiler = Compiler::new(params.clone(), Some(proc_ctx(source, param_types)));
+    compiler.debug_info = source.debug_info;
+    compiler.byond = source.byond;
+    compiler.emit_ins(Instruction::DbgFile(DMString(
+        source.file.as_bytes().to_vec(),
+    )));
+
+    let empty: Block = Box::new([]);
+    let code = source.value.code.as_ref().unwrap_or(&empty);
+    super::statements::emit_proc_body(&mut compiler, source, code)?;
+
+    compiler.emit_ins(Instruction::End);
+    let ctx = compiler.proc.take().unwrap();
+    Ok(CompiledProc {
+        warnings: compiler.warnings.into_inner(),
+        nodes: compiler.nodes,
+        locals: ctx.locals,
+        params,
+        statics: ctx.statics,
+    })
+}
+
+/// What the code of `source` can see, before its first statement
+pub(super) fn proc_ctx<'a>(source: &ProcSource<'a>, param_types: Vec<String>) -> ProcCtx<'a> {
+    ProcCtx {
         tree: source.tree,
         ty: source.ty,
         locals: vec![],
         local_types: vec![],
-        param_types: declared
-            .iter()
-            .map(|p| p.var_type.type_path.to_string())
-            .collect(),
+        param_types,
         scopes: vec![vec![]],
         loops: vec![],
         iterators: 0,
@@ -249,28 +274,7 @@ pub fn compile_proc(source: &ProcSource) -> Result<CompiledProc, CompileError> {
         file_id: source.value.location.file,
         file_names: source.file_names,
         header_line: source.value.location.line,
-    };
-
-    let mut compiler = Compiler::new(params.clone(), Some(ctx));
-    compiler.debug_info = source.debug_info;
-    compiler.byond = source.byond;
-    compiler.emit_ins(Instruction::DbgFile(DMString(
-        source.file.as_bytes().to_vec(),
-    )));
-
-    let empty: Block = Box::new([]);
-    let code = source.value.code.as_ref().unwrap_or(&empty);
-    super::statements::emit_proc_body(&mut compiler, source, code)?;
-
-    compiler.emit_ins(Instruction::End);
-    let ctx = compiler.proc.take().unwrap();
-    Ok(CompiledProc {
-        warnings: compiler.warnings.into_inner(),
-        nodes: compiler.nodes,
-        locals: ctx.locals,
-        params,
-        statics: ctx.statics,
-    })
+    }
 }
 
 /// Resolves a bare identifier inside a proc: locals, then parameters, then
@@ -296,6 +300,10 @@ pub(super) fn find_var(compiler: &Compiler, name: &str) -> Option<EvalKind> {
     match name {
         "." | "usr" | "src" | "args" | "world" | "caller" | "callee" | "global" => return None,
         _ => {}
+    }
+    // A debugger's code: the rest is what its scope says (see `ExprScope`)
+    if compiler.expr_scope.is_some() {
+        return None;
     }
     let mut scope = String::new();
     if !ctx.ty.is_root() {
@@ -374,6 +382,10 @@ pub(super) fn emit_bare_call(
     let Some(ctx) = compiler.proc.as_ref() else {
         return Ok(None);
     };
+    // (a debugger's code: its scope says whose it is)
+    if compiler.expr_scope.is_some() {
+        return Ok(None);
+    }
     let ty = ctx.ty;
     let tree = ctx.tree;
     if !ty.is_root() && ty.get_proc(ident).is_some_and(|p| !p.ty().is_root()) {

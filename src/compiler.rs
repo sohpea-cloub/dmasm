@@ -302,6 +302,191 @@ pub fn compile_expr_in(
     Ok(compiler.nodes)
 }
 
+/// A debugger's code that is a proc's body, compiled by `compile_body_in`
+#[derive(Debug)]
+pub struct CompiledBody {
+    pub nodes: Vec<Node>,
+    /// The body's local vars, by slot: the proc that runs it needs as many
+    pub locals: Vec<String>,
+}
+
+/// The proc a body is parsed as, and the file its debug info names
+const BODY_PROC: &str = "dmasm_body";
+const BODY_FILE: &str = "<dmasm expression>";
+
+/// Whether a debugger's code is a proc's body (`compile_body_in`) rather
+/// than one expression (`compile_expr_in`): it parses as a body, and is more
+/// than one statement, or one that isn't an expression (`var/x = 1`,
+/// `return x`, `for (...)`). Code that doesn't parse as a body either is left
+/// to the expression compiler, whose errors say why.
+pub fn is_body(code: &str) -> bool {
+    use dreammaker::ast::Statement;
+    let Ok(tree) = parse_body(code) else {
+        return false;
+    };
+    match body_statements(&tree) {
+        [] => false,
+        [only] => !matches!(only.elem, Statement::Expr(_)),
+        _ => true,
+    }
+}
+
+/// Compiles a debugger's code that is a proc's body (see `is_body`), as
+/// `compile_expr_in` compiles an expression: names mean what `scope` says,
+/// after the body's own vars, and it ends returning `list(result, params...)`
+/// with the params as the code left them. The result is what it returns, and
+/// a last statement that is an expression is returned (`var/n = 2; n * 3`
+/// gives 6); one that ends with no `return` gives `.`, as a proc does. Errors
+/// give lines within `code`.
+pub fn compile_body_in(
+    code: &str,
+    params: &[&str],
+    scope: Option<&ExprScope>,
+    byond: ByondVersion,
+) -> Result<CompiledBody, CompileError> {
+    use dreammaker::ast::{BinaryOp, Statement};
+
+    let parsed = parse_body(code)?;
+    let mut statements = body_statements(&parsed).to_vec();
+    if let Some(last) = statements.last_mut() {
+        if let Statement::Expr(expr) = &last.elem {
+            // (but `x << y` and `x >> y` alone are output and input)
+            let io = matches!(expr, Expression::BinaryOp { op: BinaryOp::LShift | BinaryOp::RShift, .. });
+            if !io {
+                last.elem = Statement::Return(Some(expr.clone()));
+            }
+        }
+    }
+    let value = dreammaker::objtree::ProcValue {
+        code: Some(statements.into_boxed_slice()),
+        ..parsed.root().get().procs.get(BODY_PROC).expect("the body's proc").value[0].clone()
+    };
+    // What the code can see of types is BYOND's own: the world's aren't
+    // known here
+    let tree = builtins_tree();
+    let root = tree.root();
+    let source = procs::ProcSource {
+        tree: &tree,
+        ty: root,
+        name: BODY_PROC,
+        value: &value,
+        file: BODY_FILE,
+        debug_info: true,
+        index: Some(0),
+        byond,
+        file_names: None,
+    };
+
+    let ctx = procs::proc_ctx(&source, vec![String::new(); params.len()]);
+    let mut compiler = Compiler::new(params.iter().map(|x| x.to_string()).collect(), Some(ctx));
+    compiler.byond = byond;
+    compiler.expr_scope = scope;
+    compiler.emit_ins(Instruction::DbgFile(DMString(BODY_FILE.as_bytes().to_vec())));
+    statements::emit_proc_body(&mut compiler, &source, value.code.as_ref().unwrap()).map_err(
+        |e| match e {
+            // (the proc's header is the line before the body's first)
+            CompileError::AtLine(line, e) => CompileError::AtLine(line.saturating_sub(1), e),
+            e => e,
+        },
+    )?;
+    compiler.emit_ins(Instruction::End);
+    let locals = compiler.proc.take().unwrap().locals;
+
+    // Every way out returns the result and the params, as an expression
+    // does; `End` returns `.`, which is the frame's when it's a param
+    let count = params.len() as u32;
+    let dot = match params.iter().rposition(|p| *p == ".") {
+        Some(index) => Variable::Arg(index as u32),
+        None => Variable::Dot,
+    };
+    let mut nodes = vec![];
+    for node in compiler.nodes {
+        let ins = match node {
+            Node::Instruction(ins, ()) => ins,
+            other => {
+                nodes.push(other);
+                continue;
+            }
+        };
+        match ins {
+            Instruction::DbgLine(line) => {
+                nodes.push(Node::Instruction(Instruction::DbgLine(line.saturating_sub(1)), ()))
+            }
+            Instruction::Ret | Instruction::End => {
+                if ins == Instruction::End {
+                    nodes.push(Node::Instruction(Instruction::GetVar(dot.clone()), ()));
+                }
+                for arg in 0..count {
+                    nodes.push(Node::Instruction(Instruction::GetVar(Variable::Arg(arg)), ()));
+                }
+                nodes.push(Node::Instruction(Instruction::NewList(count + 1), ()));
+                nodes.push(Node::Instruction(Instruction::Ret, ()));
+            }
+            ins => nodes.push(Node::Instruction(ins, ())),
+        }
+    }
+    Ok(CompiledBody { nodes, locals })
+}
+
+/// Parses a debugger's code as the body of a global proc, `BODY_PROC`: one
+/// tab in from its header, after what all its lines start with is taken off
+fn parse_body(code: &str) -> Result<dreammaker::objtree::ObjectTree, CompileError> {
+    let lines: Vec<&str> = code.lines().collect();
+    let indent = |line: &str| line.len() - line.trim_start_matches([' ', '\t']).len();
+    let common = lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| &line[..indent(line)])
+        .reduce(|a, b| {
+            let same = a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count();
+            &a[..same]
+        })
+        .unwrap_or("");
+    let mut text = format!("/proc/{}()\n", BODY_PROC);
+    for line in &lines {
+        text.push('\t');
+        text.push_str(line.strip_prefix(common).unwrap_or(line.trim_start()));
+        text.push('\n');
+    }
+
+    let ctx = dreammaker::Context::default();
+    let pp = dreammaker::Preprocessor::from_buffer(&ctx, BODY_FILE.into(), text);
+    let mut parser = dreammaker::Parser::new(&ctx, pp);
+    parser.enable_procs();
+    // (with BYOND's types, the parser prints to stderr about a proc that
+    // doesn't parse)
+    let tree = parser.parse_object_tree_without_builtins();
+    if let Some(err) = ctx.errors().iter().find(|e| e.severity() >= Severity::Error) {
+        // where it is in `code`: a line up (or the last line, for its end),
+        // and a column left of the tab
+        let mut at = err.location();
+        at.line = at.line.saturating_sub(1).clamp(1, lines.len().max(1) as u32);
+        at.column = at.column.saturating_sub(1).max(1);
+        return Err(CompileError::ParseError(dreammaker::DMError::new(at, err.description())));
+    }
+    if tree.root().get().procs.get(BODY_PROC).is_none_or(|p| p.value.is_empty()) {
+        return Err(CompileError::UnsupportedStatement("code outside the body"));
+    }
+    Ok(tree)
+}
+
+/// A tree of BYOND's own types, and nothing else
+fn builtins_tree() -> dreammaker::objtree::ObjectTree {
+    let ctx = dreammaker::Context::default();
+    let pp = dreammaker::Preprocessor::from_buffer(&ctx, BODY_FILE.into(), "");
+    dreammaker::Parser::new(&ctx, pp).parse_object_tree()
+}
+
+/// The statements of a body `parse_body` parsed
+fn body_statements(tree: &dreammaker::objtree::ObjectTree) -> &[dreammaker::ast::Spanned<dreammaker::ast::Statement>] {
+    tree.root()
+        .get()
+        .procs
+        .get(BODY_PROC)
+        .and_then(|p| p.value[0].code.as_deref())
+        .unwrap_or(&[])
+}
+
 /// `src.member`, for a name a debugger's expression leaves `src.` off
 fn src_member(member: Follow) -> Expression {
     let location = dreammaker::Location::BUILTINS;
@@ -848,7 +1033,9 @@ impl<'a> Compiler<'a> {
                     Some(Follow::StaticField(_) | Follow::ProcReference(_)),
                 ) = (type_term, unspanned_follows.first())
                 {
-                    if self.proc.is_some() && prefab.vars.is_empty() {
+                    // (a debugger's code reads it at runtime: it doesn't
+                    // have the world's types)
+                    if self.proc.is_some() && prefab.vars.is_empty() && self.expr_scope.is_none() {
                         self.global_field = true;
                         let path = prefab.path.to_string();
                         let kind = procs::emit_type_scope(self, &path, &unspanned_follows[0])?;
