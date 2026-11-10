@@ -484,6 +484,17 @@ fn removed_procs_and_vars_stay() {
 }
 
 #[test]
+fn a_removed_var_a_subtype_overrode_stays() {
+    // The subtype's override goes with the var: nothing to set there
+    let before = "/datum/thing\n\tvar/a = 1\n/datum/thing/sub\n\ta = 2\n";
+    let after = "/datum/thing\n/datum/thing/sub\n";
+    let changes = changes("removed-override", before, after);
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    assert!(changes.warnings.join("\n").contains("var a was removed"), "{:?}", changes.warnings);
+    assert!(changes.var_defaults.is_empty(), "{:?}", changes.var_defaults);
+}
+
+#[test]
 fn removed_overrides_are_unlinked() {
     let before = "/datum/a/b\n\tvar/x = 1\n/datum/a/proc/f()\n\treturn 1\n/datum/a/b/f()\n\treturn 2\n/datum/a/b/f()\n\treturn 3\n/proc/g()\n\treturn 1\n";
     let changes = changes(

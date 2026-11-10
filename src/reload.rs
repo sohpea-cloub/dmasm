@@ -2259,10 +2259,11 @@ fn compare_types(
                 changes.warnings.push(format!(
                     "{shown}: var {name} was removed, and stays in the running world"
                 ));
-            } else {
+            } else if n.get_var_declaration(name.as_str()).is_some() {
                 // No longer overridden here: the type goes back to what it inherits
                 var_default(old, new, path, name.as_str(), false, changes);
             }
+            // (else the var itself was removed, warned about where it was declared)
         }
 
         let op = o.map_or(&no_procs, |o| &o.get().procs);
