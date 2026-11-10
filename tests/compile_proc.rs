@@ -813,3 +813,13 @@ fn locate_in_a_list_in_another() {
     let code = compile("/datum/t\n/proc/f(a, b)\n\treturn locate(/datum/t) in a in b\n", "", "f");
     assert_eq!(code, "GetVar arg(1)\nPushVal /datum/t\nGetVar arg(0)\nLocateType\nIsIn Value\nGetFlag\nRet\nEnd");
 }
+
+#[test]
+fn for_loop_separators_can_be_mixed() {
+    // DreamMaker takes `for(a; b, c)` and `for(a, b; c)` as `for(a; b; c)` (tgstation has both)
+    let body = |head: &str| compile(&format!("/proc/f(n)\n\tvar/i\n\tfor({head})\n\t\tworld.log << i\n"), "", "f");
+    let want = body("i = 1; i <= n; i++");
+    assert!(want.contains("Inc local(0)"), "{want}");
+    assert_eq!(body("i = 1; i <= n, i++"), want);
+    assert_eq!(body("i = 1, i <= n; i++"), want);
+}
