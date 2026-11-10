@@ -729,3 +729,14 @@ fn a_false_else_if_leaves_its_jump() {
     let code = compile("/proc/f(a, b)\n\tif (0) b = 1\n\telse if (a) b = 2\n\treturn b\n", "", "f");
     assert!(!code.contains("Jmp "), "{code}");
 }
+
+#[test]
+fn or_assign_goes_by_the_source_of_a_folded_value() {
+    // `0 && o.m` folds to 0, but reads a field in the source
+    let types = "/datum/t\n\tvar/n = 1\n\tvar/m = 2\n\tvar/static/st = 3\n";
+    let code = compile(&format!("{types}/proc/f(datum/t/o)\n\to.n &&= (0 && o.m)\n"), "", "f");
+    assert_has(&code, &["PushCache", "PushInt 0", "PopCache"]);
+    // a static read isn't one
+    let code = compile(&format!("{types}/proc/f(datum/t/o)\n\to.n &&= (0 && o.st)\n"), "", "f");
+    assert!(!code.contains("PushCache"), "{code}");
+}

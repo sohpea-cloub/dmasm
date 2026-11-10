@@ -319,6 +319,9 @@ struct Compiler<'a> {
     /// these even when the code doesn't use it (but not for `global.x`, or a
     /// static or const var read as `a.s`)
     global_field: bool,
+    /// Set while compiling an expression with nothing folded (to see what
+    /// DreamMaker sees in its source)
+    no_fold: bool,
     /// The element type of the `/list/T` var a follow starts from, for its
     /// first index. Taken by `follow::emit_typed`.
     list_elem_type: Option<dreammaker::objtree::TypeRef<'a>>,
@@ -346,6 +349,7 @@ impl<'a> Compiler<'a> {
             regroup_root: false,
             regroup_chain: false,
             global_field: false,
+            no_fold: false,
             list_elem_type: None,
         }
     }

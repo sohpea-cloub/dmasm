@@ -118,6 +118,9 @@ pub(super) fn constant(c: &Compiler, expr: &Expression) -> Option<Constant> {
 
 /// The value of a constant expression.
 pub(super) fn value(c: &Compiler, expr: &Expression) -> Option<Constant> {
+    if c.no_fold {
+        return None;
+    }
     match expr {
         Expression::Base { term, follow } => {
             // x::a::CONST

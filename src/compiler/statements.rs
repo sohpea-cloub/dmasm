@@ -1206,6 +1206,42 @@ fn emit_loop_body(
     res
 }
 
+/// Whether the code from `start` uses the cache, calls a global proc or reads
+/// a list element (so `x.y ||= v` saves the cache around v).
+fn saves_cache(compiler: &Compiler, start: usize) -> bool {
+    compiler.nodes[start..].iter().any(|n| {
+        matches!(n, Node::Instruction(i, _) if super::procs::touches_cache(i)
+            || matches!(i, Instruction::CallGlob(..) | Instruction::CallGlobalArgList(_) | Instruction::ListGet))
+    })
+}
+
+/// Whether `value` would save the cache with nothing folded: it's compiled
+/// that way and thrown away.
+fn unfolded_saves_cache(compiler: &mut Compiler, value: &Expression) -> bool {
+    let start = compiler.nodes.len();
+    let saved = (
+        compiler.label_count,
+        compiler.cache.clone(),
+        compiler.last_line,
+        compiler.label_states.clone(),
+        compiler.global_field,
+    );
+    compiler.no_fold = true;
+    compiler.global_field = false;
+    let ok = emit_value(compiler, value).is_ok();
+    compiler.no_fold = false;
+    let saves = ok && (compiler.global_field || saves_cache(compiler, start));
+    compiler.nodes.truncate(start);
+    (
+        compiler.label_count,
+        compiler.cache,
+        compiler.last_line,
+        compiler.label_states,
+        compiler.global_field,
+    ) = saved;
+    saves
+}
+
 /// An expression without the parentheses around it: `(x) = y` assigns to x.
 fn unparenthesised(expr: &Expression) -> Expression {
     let mut expr = expr;
@@ -1822,12 +1858,11 @@ fn emit_expr_statement_inner(compiler: &mut Compiler, expr: &Expression) -> Resu
                 compiler.global_field = false;
                 emit_value(compiler, rhs)?;
                 compiler.implicit_type = None;
-                // (a global proc call or a list element counts too)
+                // (a global proc call or a list element counts too; DreamMaker
+                // goes by the source, even what folding leaves out)
                 let saves = std::mem::take(&mut compiler.global_field)
-                    || compiler.nodes[start..].iter().any(|n| {
-                        matches!(n, Node::Instruction(i, _) if super::procs::touches_cache(i)
-                            || matches!(i, Instruction::CallGlob(..) | Instruction::CallGlobalArgList(_) | Instruction::ListGet))
-                    });
+                    || saves_cache(compiler, start)
+                    || (super::fold::value(compiler, rhs).is_some() && unfolded_saves_cache(compiler, rhs));
                 // (a list element's key too, when the value indexes a list)
                 let saves_key = !field
                     && compiler.nodes[start..].iter().any(|n| {
