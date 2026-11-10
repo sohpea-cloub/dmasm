@@ -410,9 +410,12 @@ pub struct Changes {
     /// New defaults of built-in vars (`name`, `icon_state`, `pixel_x`, ...),
     /// which types keep in their records rather than var tables
     pub builtin_defaults: Vec<VarDefault>,
-    /// The consts of types whose values changed. The procs whose code changes
-    /// with them are among the reloads.
+    /// The consts whose values changed. The procs whose code changes with
+    /// them are among the reloads.
     pub consts: Vec<String>,
+    /// Vars whose defaults changed: the code that reads one as `/type::var`
+    /// has it compiled in, and is compiled again.
+    pub defaults_changed: Vec<String>,
     /// Vars declared with another type now (or SpacemanDMM's checks, or
     /// another way), which matters to the code that uses them: those procs
     /// whose code changes are among the reloads.
@@ -1276,7 +1279,7 @@ fn old_key(realigned: &Realigned, key: &ProcKey) -> Option<ProcKey> {
 /// vars whose declared types did, which their own code doesn't show: those
 /// that name one, and compile to something else now.
 fn const_users(old: &Snapshot, new: &Snapshot, realigned: &Realigned, changes: &mut Changes) {
-    if changes.consts.is_empty() && changes.retyped.is_empty() {
+    if changes.consts.is_empty() && changes.retyped.is_empty() && changes.defaults_changed.is_empty() {
         return;
     }
     // A name in the syntax tree shows in its debug text, as an identifier,
@@ -1285,6 +1288,7 @@ fn const_users(old: &Snapshot, new: &Snapshot, realigned: &Realigned, changes: &
         .consts
         .iter()
         .chain(&changes.retyped)
+        .chain(&changes.defaults_changed)
         .map(|c| format!("{c:?}"))
         .collect();
     // By their old keys
@@ -2638,6 +2642,12 @@ fn var_default(
                 .push(format!("{shown}: const {name}'s value doesn't compile: {e}")),
         }
         return;
+    }
+
+    // `/type::var` is compiled into the code that says it, which is
+    // compiled again (see `const_users`)
+    if !is_new && !changes.defaults_changed.iter().any(|c| c == name) {
+        changes.defaults_changed.push(name.to_owned());
     }
 
     // A default that isn't a constant is set by the init procs, which

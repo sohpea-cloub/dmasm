@@ -1330,3 +1330,14 @@ fn one_file_parsed_again_on_its_own() {
         }
     }
 }
+
+#[test]
+fn a_changed_default_recompiles_type_scope_users() {
+    // `/datum/thing::size` is the default, compiled into the code
+    let before = "/datum/thing\n\tvar/size = 2\n/datum/thing/big\n/proc/a()\n\treturn /datum/thing/big::size\n/proc/b()\n\treturn 2\n";
+    let after = before.replace("/datum/thing/big\n", "/datum/thing/big\n\tsize = 9\n");
+    let changes = changes("type-scope-default", before, &after);
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    assert_eq!(changes.defaults_changed, ["size"]);
+    assert_eq!(reloaded(&changes), [key("/a", 0)]);
+}
