@@ -15,7 +15,7 @@ fn unroll(expr: &Expression) -> &Expression {
         Expression::Base { term, follow } => {
             if follow.is_empty() {
                 if let Term::Expr(inner) = &term.elem {
-                    unroll(inner.as_ref());
+                    return unroll(inner.as_ref());
                 }
             }
 

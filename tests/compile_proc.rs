@@ -473,3 +473,17 @@ fn switch_with_no_cases() {
     assert_has(&code, &["GetVar arg(0)", "Switch default => LAB_0001,", "LAB_0001:", "PushInt 1", "Ret"]);
 }
 
+#[test]
+fn parenthesised_assignment_is_a_list_key() {
+    // in a list constructor the parentheses don't stop it being a key and
+    // value; in a proc call they make it an assignment
+    let code = compile("/proc/f(a, b, c)\n\treturn list(a, (b = 1), c)\n", "", "f");
+    assert_has(
+        &code,
+        &["PushInt 1", "GetVar arg(0)", "GetVar arg(1)", "PushInt 1", "PushInt 3", "GetVar arg(2)", "NewAssocList 3"],
+    );
+    let code = compile("/proc/f(a, b, c)\n\treturn list((\"x\" = 1))\n", "", "f");
+    assert_has(&code, &["PushVal \"x\"", "PushInt 1", "NewAssocList 1"]);
+    let code = compile("/proc/g(a, b)\n\treturn b\n/proc/f(a, b, c)\n\treturn g(a, (b = 1))\n", "", "f");
+    assert_has(&code, &["GetVar arg(0)", "PushInt 1", "SetVarExpr arg(1)", "CallGlob 2 /proc/g"]);
+}
