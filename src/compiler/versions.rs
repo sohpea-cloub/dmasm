@@ -29,8 +29,8 @@ const NEW_IN_516: &[&str] = &[
 ];
 
 /// The first build that restores the cache before reading the list and index
-/// of a list element it changes through `?.` (`a?.L[k] += x`); before it the
-/// list is read from whatever the value left in the cache.
+/// of a list element it changes through `?.` (`a?.L[k] += x`, `a?.L[k] ||= x`);
+/// before it the list is read from whatever the value left in the cache.
 pub(super) const SAFE_ELEMENT_CACHE: u32 = 1685;
 
 /// The first build with `__PROC__`.

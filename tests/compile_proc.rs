@@ -571,3 +571,37 @@ fn writing_a_static_var_through_safe_access() {
     );
 }
 
+#[test]
+fn logical_assignment_through_safe_access() {
+    let src = "/datum/t\n\tvar/v\n\tvar/datum/t/n\n/proc/f(datum/t/a, b)\n\ta?.n?.v ||= b\n\treturn a\n";
+    assert_eq!(
+        compile(src, "", "f"),
+        [
+            "GetVar arg(0)",
+            "SetCachePopJmpIfNull LAB_0001",
+            "PushCache",
+            "GetVar cache[\"n\"]",
+            "SetCachePopJmpIfNull LAB_0002",
+            "PushCache",
+            "PopCache",
+            "GetVar cache[\"v\"]",
+            "Test",
+            "Jnz LAB_0002",
+            "GetVar arg(1)",
+            "SetVar cache[\"v\"]",
+            "LAB_0002:",
+            "PopCache",
+            "LAB_0001:",
+            "GetVar arg(0)",
+            "Ret",
+            "End",
+        ]
+        .join("\n")
+    );
+    // a value that uses the cache keeps the place around it
+    let src = "/datum/t\n\tvar/v\n\tvar/datum/t/n\n/proc/f(datum/t/a, b)\n\ta?.v &&= a.n\n";
+    assert_has(
+        &compile(src, "", "f"),
+        &["Jz LAB_0001", "PushCache", "GetVar cache = arg(0); cache[\"n\"]", "PopCache", "SetVar cache[\"v\"]"],
+    );
+}

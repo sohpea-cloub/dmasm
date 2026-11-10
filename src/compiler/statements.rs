@@ -1276,6 +1276,9 @@ pub(super) enum SafeWrite<'w> {
     Assign,
     /// The instructions that change it.
     Change(&'w dyn Fn(Variable) -> Vec<Instruction>),
+    /// `||=` (or `&&=` when false) as a statement: the value is found and
+    /// assigned only when the place's value doesn't decide it.
+    Logical { or: bool },
 }
 
 fn is_safe_follow(f: &Follow) -> bool {
@@ -1369,6 +1372,8 @@ impl SafeChain {
                     && matches!(self.last.last(), Some(Follow::Field(..)))
             }
             (None, SafeWrite::Assign) => false,
+            (Some(_), SafeWrite::Logical { .. }) => !value_form,
+            (None, SafeWrite::Logical { .. }) => false,
         }
     }
 }
@@ -1430,8 +1435,9 @@ pub(super) fn emit_safe_chain_write(
             }
         }
     }
-    if let Some(value) = value {
-        compiler.implicit_type = place.and_then(|p| compiler.static_type_name(p));
+    let implicit = place.and_then(|p| compiler.static_type_name(p));
+    if let (Some(value), false) = (value, matches!(write, SafeWrite::Logical { .. })) {
+        compiler.implicit_type = implicit.clone();
         emit_value(compiler, value)?;
         compiler.implicit_type = None;
     }
@@ -1499,6 +1505,46 @@ pub(super) fn emit_safe_chain_write(
                 compiler.emit_ins(ins);
             }
             ends.pop().map(|end| compiler.emit_label(end));
+        }
+        (Some(fields), SafeWrite::Logical { or }, index) => {
+            let restore_first = index.is_none()
+                || compiler.byond.at_least(super::versions::SAFE_ELEMENT_CACHE);
+            if restore_first {
+                compiler.emit_ins(Instruction::PopCache);
+            }
+            let mut var = field_var(&fields);
+            if let Some(index) = index {
+                compiler.emit_ins(Instruction::GetVar(var));
+                emit_value(compiler, &index)?;
+                if !restore_first {
+                    compiler.emit_ins(Instruction::PopCache);
+                }
+                compiler.emit_ins(Instruction::SetVar(Variable::CacheKey));
+                compiler.emit_ins(Instruction::SetVar(Variable::Cache));
+                var = Variable::CacheIndex;
+            }
+            compiler.emit_ins(Instruction::GetVar(var.clone()));
+            compiler.emit_ins(Instruction::Test);
+            let end = ends.pop().expect("a segment");
+            compiler.emit_ins(if or {
+                Instruction::Jnz(Label::Named(end.clone()))
+            } else {
+                Instruction::Jz(Label::Named(end.clone()))
+            });
+            // The place is kept around a value that changes the cache
+            let start = compiler.nodes.len();
+            compiler.implicit_type = implicit;
+            emit_value(compiler, value.expect("a value"))?;
+            compiler.implicit_type = None;
+            if compiler.nodes[start..]
+                .iter()
+                .any(|n| matches!(n, Node::Instruction(i, _) if super::procs::touches_cache(i)))
+            {
+                compiler.nodes.insert(start, Node::Instruction(Instruction::PushCache, ()));
+                compiler.emit_ins(Instruction::PopCache);
+            }
+            compiler.emit_ins(Instruction::SetVar(var));
+            compiler.emit_label(end);
         }
         _ => unreachable!("not writable"),
     }
@@ -1642,6 +1688,21 @@ fn emit_expr_statement_inner(compiler: &mut Compiler, expr: &Expression) -> Resu
             if !emit_safe_write(compiler, lhs, Some(rhs), write, false)? {
                 return Err(CompileError::ExpectedLValue);
             }
+            Ok(())
+        }
+
+        // `a?.b ||= v`
+        Expression::AssignOp {
+            op: op @ (AssignOp::OrAssign | AssignOp::AndAssign),
+            lhs,
+            rhs,
+        } if safe_place(lhs)
+            .is_some_and(|(_, c)| c.writable(&SafeWrite::Logical { or: true }, false)) =>
+        {
+            let write = SafeWrite::Logical {
+                or: *op == AssignOp::OrAssign,
+            };
+            emit_safe_write(compiler, lhs, Some(rhs), write, false)?;
             Ok(())
         }
 

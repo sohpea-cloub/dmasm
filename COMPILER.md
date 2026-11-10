@@ -82,6 +82,10 @@ These are accepted as equivalent by the comparison:
   division the source asks for. (tgstation's `/mob/living/proc/Life` is one such proc.)
 - **`a?.f(b?.x)?.y = v`.** DreamMaker calls `f` on whatever the argument left in the
   cache; the compiler restores the receiver first.
+- **`a?.b ||= v` and `&&=` before 516.1673.** DreamMaker before 516.1673 leaves out the
+  null tests (`a?.b ||= v` is a runtime error when a is null) and, with more than one `?.`
+  (`a?.n?.v ||= x`), reads and writes the var of the first object instead of the last.
+  The compiler does what the source says on every build.
 - **`/T/name` blocks where `name` is a proc of T.** Written as a subtype with var
   lines, DreamMaker appends the lines to the proc's code instead (cmss13's
   `/obj/structure/mineral_door/wood/open`); SpacemanDMM makes the subtype the code means.
