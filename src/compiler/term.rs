@@ -169,8 +169,8 @@ pub(super) fn emit(compiler: &mut Compiler<'_>, term: Term) -> Result<EvalKind, 
                 compiler.emit_move_to_stack(kind)?;
             }
 
-            // Push RHS
-            match args::emit(compiler, args::ArgsContext::List, rhs.into_vec())? {
+            // Push RHS (as a proc's: `(x = 1)` is an assignment)
+            match args::emit(compiler, args::ArgsContext::Proc, rhs.into_vec())? {
                 args::ArgsResult::Normal => match lhs_len {
                     1 => compiler.emit_ins(Instruction::CallPath(rhs_len as u32)),
                     2 => compiler.emit_ins(Instruction::CallName(rhs_len as u32)),

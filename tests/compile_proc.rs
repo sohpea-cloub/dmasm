@@ -707,3 +707,16 @@ fn type_and_proc_macros_fold_in_a_test() {
     let code = compile("/proc/f(a, b)\n\treturn (__PROC__ ? a : b)\n", "", "f");
     assert_eq!(code, "GetVar arg(0)\nRet\nEnd");
 }
+
+#[test]
+fn call_arguments_are_a_procs() {
+    // `(n = 1)` is an assignment passed in its place
+    let code = compile("/proc/f(o, n)\n\treturn call(o, \"f\")((n = 1), 2)\n", "", "f");
+    assert_has(&code, &["PushVal \"f\"", "PushInt 1", "SetVarExpr arg(1)", "PushInt 2", "CallName 2"]);
+    // (with a named argument, as in any call, it's n's value as a key)
+    let code = compile("/proc/f(o, n)\n\treturn call(o, \"f\")((n = 1), x = 2)\n", "", "f");
+    assert_has(
+        &code,
+        &["GetVar arg(1)", "PushInt 1", "PushVal \"x\"", "PushInt 2", "NewAssocList 2", "CallNameArgList"],
+    );
+}
