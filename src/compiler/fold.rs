@@ -283,6 +283,14 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
             Constant::New
         }
         Term::List(args) | Term::Alist(args) if constant_args(c, args) => Constant::New,
+        // A proc's type (null in a global proc) and its own path
+        Term::__TYPE__ => match c.proc.as_ref()? {
+            p if p.ty.is_root() => Constant::Null,
+            p => Constant::Path(p.ty.get().path.clone()),
+        },
+        Term::__PROC__ if c.byond.at_least(super::versions::PROC_MACRO) => {
+            Constant::Path(c.proc.as_ref()?.proc_path.clone())
+        }
         Term::Call(name, args) if name.as_str() == "newlist" && constant_args(c, args) => {
             Constant::New
         }

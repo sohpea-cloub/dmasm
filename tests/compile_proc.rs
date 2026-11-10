@@ -696,3 +696,14 @@ fn goto_in_a_try_block_uses_try_jmp() {
     // not from the catch block
     assert!(code.contains("JmpLoop USER_l2"), "{code}");
 }
+
+#[test]
+fn type_and_proc_macros_fold_in_a_test() {
+    let code = compile("/datum/t/proc/f(a, b)\n\treturn (__TYPE__ ? a : b)\n", "/datum/t", "f");
+    assert_eq!(code, "GetVar arg(0)\nRet\nEnd");
+    // null in a global proc
+    let code = compile("/proc/f(a, b)\n\treturn (__TYPE__ ? a : b)\n", "", "f");
+    assert_eq!(code, "GetVar arg(1)\nRet\nEnd");
+    let code = compile("/proc/f(a, b)\n\treturn (__PROC__ ? a : b)\n", "", "f");
+    assert_eq!(code, "GetVar arg(0)\nRet\nEnd");
+}
