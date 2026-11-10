@@ -778,10 +778,8 @@ fn initial_of_a_static_or_const_is_its_globals() {
     );
 }
 
-#[test]
-fn a_type_scope_default_records_where_it_is_written() {
-    // (same file: its line, and the statement's line still counts)
-    let src = "/datum/u\n\tvar/x = 3\n/proc/f(a)\n\ta = /datum/u::x\n\treturn a\n";
+/// `src`'s proc f with debug info, where any other file is other.dm
+fn compile_with_lines(src: &str) -> Vec<String> {
     let ctx = dreammaker::Context::default();
     let pp = dreammaker::Preprocessor::from_buffer(&ctx, "test.dm".into(), src.to_owned());
     let mut parser = dreammaker::Parser::new(&ctx, pp);
@@ -800,11 +798,41 @@ fn a_type_scope_default_records_where_it_is_written() {
         file_names: Some(&|_| "other.dm".to_owned()),
     };
     let code = dmasm::format(&compile_proc(&source).unwrap().nodes);
-    let code: Vec<&str> = code.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    code.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("LAB_")).map(str::to_owned).collect()
+}
+
+#[test]
+fn a_type_scope_default_records_where_it_is_written() {
+    // (same file: its line, and the statement's line still counts)
+    let code = compile_with_lines("/datum/u\n\tvar/x = 3\n/proc/f(a)\n\ta = /datum/u::x\n\treturn a\n");
     assert_eq!(
         code,
         ["DbgFile \"test.dm\"", "DbgLine 4", "DbgLine 2", "PushInt 3", "SetVar arg(0)", "DbgLine 5", "GetVar arg(0)", "Ret", "End"]
     );
+}
+
+#[test]
+fn only_compound_terms_record_a_later_line() {
+    // A variable, a field or a literal doesn't; a call, an operator (one that
+    // folds too) or an interpolated string does
+    let code = compile_with_lines("/proc/g()\n/proc/f(datum/a)\n\ta = list(1,\n\t\ta,\n\t\ta.type,\n\t\t-1,\n\t\t1 + 2,\n\t\t\"[a]\",\n\t\tg())\n");
+    let lines: Vec<&str> = code.iter().map(String::as_str).filter(|l| l.starts_with("DbgLine")).collect();
+    assert_eq!(lines, ["DbgLine 3", "DbgLine 7", "DbgLine 8", "DbgLine 9"]);
+}
+
+#[test]
+fn after_a_default_the_next_compound_term_records_its_line() {
+    // A default written further down (or in another file): the line is
+    // recorded again before `"[a]"`, which `||` can jump over (so DreamMaker's
+    // runtime errors after it can name the default's file)
+    let code = compile_with_lines(
+        "/proc/f(a)\n\tif (text(\"[]\", /datum/u::x) || \"[a]\")\n\t\ta = 1\n/datum/u\n\tvar/x = 3\n",
+    );
+    let at = code.iter().position(|l| l.starts_with("JmpOr")).unwrap();
+    assert_eq!(code[at + 1..at + 3], ["DbgLine 2", "GetVar arg(0)"], "{code:?}");
+    // a leaf doesn't
+    let code = compile_with_lines("/proc/f(a)\n\ta = list(/datum/u::x, a, a.type)\n/datum/u\n\tvar/x = 3\n");
+    assert_eq!(code.iter().filter(|l| l.starts_with("DbgLine")).count(), 2, "{code:?}");
 }
 
 #[test]

@@ -746,6 +746,7 @@ fn prefab_value(
     let saved = std::mem::take(&mut compiler.nodes);
     let saved_cache = compiler.cache.take();
     let saved_line = compiler.last_line.take();
+    let saved_pending = std::mem::take(&mut compiler.line_pending);
     let mut vars = vec![];
     let mut res = Ok(());
     for (name, value) in prefab.vars.iter() {
@@ -783,6 +784,7 @@ fn prefab_value(
     compiler.nodes = saved;
     compiler.cache = saved_cache;
     compiler.last_line = saved_line;
+    compiler.line_pending = saved_pending;
     res?;
     Ok(Value::Prefab {
         path: prefab.path.to_string(),

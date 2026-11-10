@@ -322,6 +322,9 @@ struct Compiler<'a> {
     /// Set while the debug info names another file (a var default's): the
     /// next line recorded names the proc's own again first
     other_file: bool,
+    /// Set after a var default's line is recorded: the next compound term
+    /// records its own line, whatever it is (see `compound_line`)
+    line_pending: bool,
     /// Set while compiling `call(x, __PROC__)`'s proc, where builds before
     /// 515.1644 take `__PROC__`
     proc_macro_ok: bool,
@@ -356,6 +359,7 @@ impl<'a> Compiler<'a> {
             regroup_chain: false,
             global_field: false,
             other_file: false,
+            line_pending: false,
             proc_macro_ok: false,
             no_fold: false,
             list_elem_type: None,
@@ -373,6 +377,7 @@ impl<'a> Compiler<'a> {
             self.emit_ins(Instruction::DbgFile(DMString(file.into_bytes())));
         }
         if let Instruction::DbgLine(line) = ins {
+            self.line_pending = false;
             // DreamMaker doesn't repeat the line it last recorded
             if self.last_line == Some(line) {
                 return;
@@ -579,6 +584,15 @@ impl<'a> Compiler<'a> {
         // (see `regroup_root`)
         let root = std::mem::take(&mut self.regroup_root);
         if self.proc.is_some() {
+            // A compound term on a later line than the last recorded one gets
+            // its own line record, as in a list() written over several lines,
+            // and so does the first one after a var default whatever its line
+            // (DreamMaker goes by the source: one that folds counts too)
+            if let Some(line) = compound_line(&expr) {
+                if self.line_pending || self.last_line.is_some_and(|l| line > l) {
+                    self.emit_ins(Instruction::DbgLine(line));
+                }
+            }
             let folded = fold::constant(self, &expr);
             // (DreamMaker forgets the cache where it folds `&&` or `||`)
             if folded.as_ref().is_some_and(|c| *c != fold::Constant::New) && fold::has_logic(&expr) {
@@ -605,17 +619,6 @@ impl<'a> Compiler<'a> {
                 }
                 // (`constant` leaves it to be made)
                 Some(fold::Constant::New) | None => {}
-            }
-            // A term on a later line than the last recorded one gets its own
-            // line record, as in a list() written over several lines
-            // (and after a default from another file, a call or a list
-            // element names the proc's file and line again)
-            if let Expression::Base { term, follow } = &expr {
-                let runs_code = matches!(term.elem, dreammaker::ast::Term::Call(..))
-                    || follow.iter().any(|f| matches!(f.elem, Follow::Call(..) | Follow::Index(..)));
-                if self.last_line.is_some_and(|l| term.location.line > l) || (self.other_file && runs_code) {
-                    self.emit_ins(Instruction::DbgLine(term.location.line));
-                }
             }
         }
         match expr {
@@ -831,4 +834,45 @@ fn compiles_safe_field_increment() {
         bytecode,
         vec![0x84, 1337, 0x33, 0xFFD9, 0, 0x13D, 9, 0x63, 1337, 0x33, 0xFFD9, 0, 0x1A, 2, 0x12,]
     );
+}
+
+/// The line of `expr` if DreamMaker records lines for it: anything but a leaf,
+/// which is a variable, a field of one (`a.b`, `a:b`), a literal (`-1` too)
+/// or a path.
+fn compound_line(expr: &Expression) -> Option<u32> {
+    use dreammaker::ast::{PropertyAccessKind, Term, UnaryOp};
+    match expr {
+        Expression::Base { term, follow } => {
+            let number = matches!(term.elem, Term::Int(_) | Term::Float(_));
+            let leaf_term = match &term.elem {
+                Term::Null
+                | Term::Int(_)
+                | Term::Float(_)
+                | Term::Ident(_)
+                | Term::String(_)
+                | Term::Resource(_)
+                | Term::Prefab(_)
+                | Term::GlobalIdent(_) => true,
+                Term::Expr(inner) => compound_line(inner).is_none(),
+                _ => false,
+            };
+            let leaf_follow = follow.iter().all(|f| match &f.elem {
+                Follow::Field(PropertyAccessKind::Dot | PropertyAccessKind::Colon, _) => true,
+                Follow::Unary(UnaryOp::Neg) => number && follow.len() == 1,
+                _ => false,
+            });
+            (!(leaf_term && leaf_follow)).then_some(term.location.line)
+        }
+        Expression::BinaryOp { lhs, .. } | Expression::AssignOp { lhs, .. } => Some(first_line(lhs)),
+        Expression::TernaryOp { cond, .. } => Some(first_line(cond)),
+    }
+}
+
+/// The line `expr` starts on.
+fn first_line(expr: &Expression) -> u32 {
+    match expr {
+        Expression::Base { term, .. } => term.location.line,
+        Expression::BinaryOp { lhs, .. } | Expression::AssignOp { lhs, .. } => first_line(lhs),
+        Expression::TernaryOp { cond, .. } => first_line(cond),
+    }
 }

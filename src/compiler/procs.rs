@@ -832,21 +832,20 @@ pub(super) fn emit_type_scope(
             // The initial value: a constant, or else its expression evaluated
             // again (a list, say)
             let value = ty.get_value(name.as_str());
-            // recorded where it's written, which may be another file
-            // (the statement's own line is still the one later terms go by)
+            // recorded where it's written, which may be another file (and the
+            // next compound term records its own line again)
             if let Some(at) = value.filter(|v| v.expression.is_some()).map(|v| v.location) {
                 let ctx = compiler.proc.as_ref().unwrap();
-                let line = compiler.last_line;
                 if at.file == ctx.file_id {
                     compiler.emit_ins(Instruction::DbgLine(at.line));
-                    compiler.last_line = line;
+                    compiler.line_pending = true;
                 } else if let Some(names) = ctx.file_names {
                     let file = names(at.file);
                     compiler.emit_ins(Instruction::DbgFile(DMString(file.into_bytes())));
                     compiler.last_line = None;
                     compiler.emit_ins(Instruction::DbgLine(at.line));
-                    compiler.last_line = line;
                     compiler.other_file = true;
+                    compiler.line_pending = true;
                 }
             }
             use dreammaker::constants::Constant as C;

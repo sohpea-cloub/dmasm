@@ -1229,6 +1229,8 @@ fn unfolded_saves_cache(compiler: &mut Compiler, value: &Expression) -> bool {
         compiler.last_line,
         compiler.label_states.clone(),
         compiler.global_field,
+        compiler.other_file,
+        compiler.line_pending,
     );
     compiler.no_fold = true;
     compiler.global_field = false;
@@ -1242,6 +1244,8 @@ fn unfolded_saves_cache(compiler: &mut Compiler, value: &Expression) -> bool {
         compiler.last_line,
         compiler.label_states,
         compiler.global_field,
+        compiler.other_file,
+        compiler.line_pending,
     ) = saved;
     saves
 }

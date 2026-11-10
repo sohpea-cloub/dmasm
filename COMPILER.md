@@ -9,18 +9,22 @@ running world can have procs replaced with recompiled ones (hot reloading).
 
 - **Comparison with DreamMaker.** Every proc of a codebase is compiled and assembled
   against the `.dmb` DreamMaker built from the same source, disassembled, and compared
-  with DreamMaker's code. On 2026-11-08, with BYOND 516.1685/1687 builds:
+  with DreamMaker's code. On 2026-11-10, with the BYOND build each codebase's CI uses, and
+  tgstation also at commits from when its CI used older builds:
 
-  | Codebase | Procs | Identical | Equivalent | Known differences |
-  |---|---|---|---|---|
-  | cmss13 (f712f7b) | 28,330 | 19,192 | 9,136 | 2 |
-  | tgstation (928bb812) | 66,712 | 41,848 | 24,829 | 35 |
-  | goonstation (3e27edf) | 44,522 | 29,083 | 15,437 | 2 |
+  | Codebase | BYOND | Procs | Identical | Equivalent | Known differences |
+  |---|---|---|---|---|---|
+  | cmss13 (f712f7b) | 516.1687 | 28,330 | 19,456 | 8,872 | 2 |
+  | tgstation (928bb812) | 516.1685 | 66,712 | 43,255 | 23,422 | 35 |
+  | goonstation (3e27edf) | 516.1687 | 44,522 | 29,643 | 14,875 | 2 |
+  | tgstation (addb78ce0b) | 516.1659 | 65,478 | 42,499 | 22,944 | 35 |
+  | tgstation (6a18424329) | 515.1647 | 58,937 | 38,860 | 20,041 | 36 |
+  | tgstation (7faadfdc16) | 515.1637 | 58,171 | 38,343 | 19,791 | 37 |
 
   Every proc is identical, equivalent, or one of the known differences below.
-  "Equivalent" means equal after the normalisations listed below, which only change
-  encodings, not behaviour. Debug info (DbgLine, DbgFile) is left out of the comparison:
-  the compiler writes its own.
+  "Identical" is byte for byte, debug info (DbgFile, DbgLine) included. "Equivalent" means
+  equal after the normalisations listed below, which only change encodings, not
+  behaviour, with the debug info left out.
 
 - **Running both.** The procs that compile are swapped into the `.dmb` and the codebase's
   own unit tests run on the result (all the same as DreamMaker's build: cmss13 150,
