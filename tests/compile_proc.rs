@@ -756,3 +756,9 @@ fn folding_and_or_forgets_the_cache() {
     let code = compile(&format!("{types}/proc/f(datum/t/p, n)\n\tp.l = list()\n\tn = (1 ? 2 : 3)\n\treturn p.a\n"), "", "f");
     assert_has(&code, &["SetVar arg(1)", "GetVar cache[\"a\"]"]);
 }
+
+#[test]
+fn an_if_decided_when_compiled_forgets_the_cache_after_it() {
+    let src = "/datum/t\n\tvar/a = 1\n\tvar/b = 2\n/proc/f(datum/t/p, n)\n\tif (1) n = p.a\n\treturn p.b\n";
+    assert_has(&compile(src, "", "f"), &["SetVar arg(1)", "GetVar cache = arg(0); cache[\"b\"]"]);
+}
