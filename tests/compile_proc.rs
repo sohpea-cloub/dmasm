@@ -663,3 +663,15 @@ fn folded_var_defaults_have_their_escapes() {
     let code = compile(src, "", "f");
     assert_has(&code, &["PushVal \"aq\\\"qa\tb\"", "Ret"]);
 }
+
+#[test]
+fn constant_lists_are_true_in_a_test() {
+    // a list(), alist(), newlist() or new of constants is true, and isn't made
+    for v in ["list(1, \"k\" = 2)", "list()", "new /list(2)", "newlist(/datum)", "list(k = new /datum)"] {
+        let code = compile(&format!("/proc/f(a, b)\n\treturn ({v} ? a : b)\n"), "", "f");
+        assert_eq!(code, "GetVar arg(0)\nRet\nEnd", "{v}");
+    }
+    // one of a variable is made and tested
+    let code = compile("/proc/f(a, b)\n\treturn (list(a) ? a : b)\n", "", "f");
+    assert_has(&code, &["GetVar arg(0)", "NewList 1", "Test"]);
+}

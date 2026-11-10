@@ -14,9 +14,10 @@ pub(super) enum Constant {
     Text(Vec<u8>),
     /// A type path, which only survives `&&`, `||`, `!` and `? :`.
     Path(String),
-    /// `new /T` with no arguments: DreamMaker takes it as true in a test
-    /// (`new /T ? a : b` is a, without making anything), and keeps the code
-    /// where the value itself is used (`new /T || a`).
+    /// `new /T`, `list()`, `alist()` or `newlist()` of constant arguments:
+    /// DreamMaker takes it as true in a test (`new /T ? a : b` is a, without
+    /// making anything), and keeps the code where the value itself is used
+    /// (`new /T || a`).
     New,
 }
 
@@ -259,7 +260,13 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
         Term::Float(f) => Constant::Number(*f),
         Term::Null => Constant::Null,
         Term::Prefab(prefab) if prefab.vars.is_empty() => Constant::Path(prefab.path.to_string()),
-        Term::NewPrefab { prefab, args } if prefab.vars.is_empty() && args.as_ref().is_none_or(|a| a.is_empty()) => {
+        Term::NewPrefab { prefab, args }
+            if prefab.vars.is_empty() && args.as_ref().is_none_or(|a| constant_args(c, a)) =>
+        {
+            Constant::New
+        }
+        Term::List(args) | Term::Alist(args) if constant_args(c, args) => Constant::New,
+        Term::Call(name, args) if name.as_str() == "newlist" && constant_args(c, args) => {
             Constant::New
         }
         Term::String(s) => Constant::Text(super::strings::parse(s).ok()?.0),
@@ -383,6 +390,22 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
         }
         Term::Ident(name) => from_objtree(&super::procs::const_value(c, name.as_str())?)?,
         _ => return None,
+    })
+}
+
+/// Whether every argument is a constant (`k = v` too, a bare name for k).
+fn constant_args(c: &Compiler, args: &[Expression]) -> bool {
+    args.iter().all(|arg| match arg {
+        Expression::AssignOp {
+            op: dreammaker::ast::AssignOp::Assign,
+            lhs,
+            rhs,
+        } => {
+            let key = matches!(&**lhs, Expression::Base { term, follow }
+                if follow.is_empty() && matches!(term.elem, Term::Ident(_)));
+            (key || value(c, lhs).is_some()) && value(c, rhs).is_some()
+        }
+        arg => value(c, arg).is_some(),
     })
 }
 

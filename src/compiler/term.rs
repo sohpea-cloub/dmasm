@@ -750,7 +750,10 @@ fn prefab_value(
             let literal = matches!(value, Expression::Base { term, follow }
                 if follow.is_empty()
                     && matches!(term.elem, Term::Resource(_) | Term::Prefab(_) | Term::String(_) | Term::Null));
-            if !literal && super::fold::value(compiler, value).is_none() {
+            // (a made value, like `list(1)`, runs code)
+            if !literal
+                && super::fold::value(compiler, value).is_none_or(|v| v == super::fold::Constant::New)
+            {
                 let line = value_line(value);
                 let file = compiler.proc.as_ref().map(|p| p.file.clone()).unwrap_or_default();
                 compiler.emit_ins(Instruction::DbgLine(line));
