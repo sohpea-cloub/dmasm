@@ -389,7 +389,7 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
                 if base <= 0.0 || base == 1.0 {
                     return None;
                 }
-                Constant::Number(x.ln() / base.ln())
+                Constant::Number(super::versions::log(c.byond, x, base))
             }
         }
         Term::Call(name, args)

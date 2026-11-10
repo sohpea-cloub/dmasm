@@ -85,6 +85,19 @@ pub(super) fn nan_test(name: &str, x: f32) -> Option<bool> {
     }
 }
 
+/// The first build that folds `log(b, x)` in single precision; before it the
+/// quotient of the logarithms is in double precision (and rounded once).
+pub(super) const SINGLE_LOG: u32 = 1644;
+
+/// `log(base, x)` folded as `byond`'s DreamMaker does.
+pub(super) fn log(byond: ByondVersion, x: f32, base: f32) -> f32 {
+    if byond.at_least(SINGLE_LOG) {
+        x.ln() / base.ln()
+    } else {
+        ((x as f64).ln() / (base as f64).ln()) as f32
+    }
+}
+
 /// The first build whose DreamMaker rounds the result of `arcsin`, `arccos`
 /// and `arctan` to single precision while it's still in radians (before
 /// turning it into degrees in double precision). Earlier ones work in double

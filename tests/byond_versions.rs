@@ -171,3 +171,9 @@ fn text2ascii_of_empty_text_folds() {
         assert_eq!(ret(byond, "text2ascii(\"x\")"), "PushInt 120");
     }
 }
+
+#[test]
+fn log_folds_in_double_precision_before_515_1644() {
+    assert_eq!(ret(ByondVersion::new(515, 1643), "log(1.5, 255.519)"), "PushVal 13.671452");
+    assert_eq!(ret(ByondVersion::new(515, 1644), "log(1.5, 255.519)"), "PushVal 13.6714525");
+}
