@@ -656,3 +656,10 @@ fn assert_gives_numbers_as_written() {
     let code = compile("/proc/f(n)\n\tASSERT(n > 1e3 + 0.50)\n", "", "f");
     assert!(code.contains("PushVal \"n > 1e3 + 0.50\""), "{code}");
 }
+
+#[test]
+fn folded_var_defaults_have_their_escapes() {
+    let src = "/datum/t\n\tvar/v = \"q\\\"q\"\n\tvar/const/k = \"a\\tb\"\n/proc/f()\n\treturn (\"a\" + /datum/t::v) + /datum/t::k\n";
+    let code = compile(src, "", "f");
+    assert_has(&code, &["PushVal \"aq\\\"qa\tb\"", "Ret"]);
+}

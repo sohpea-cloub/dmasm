@@ -247,7 +247,8 @@ fn from_objtree(constant: &dreammaker::constants::Constant) -> Option<Constant> 
     Some(match constant {
         C::Null(_) => Constant::Null,
         C::Float(n) => Constant::Number(*n),
-        C::String(s) => Constant::Text(s.as_str().as_bytes().to_vec()),
+        // (the text as the source has it, escapes and all)
+        C::String(s) => Constant::Text(super::strings::parse(s.as_str()).ok()?.0),
         _ => return None,
     })
 }
