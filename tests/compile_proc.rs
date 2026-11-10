@@ -720,3 +720,12 @@ fn call_arguments_are_a_procs() {
         &["GetVar arg(1)", "PushInt 1", "PushVal \"x\"", "PushInt 2", "NewAssocList 2", "CallNameArgList"],
     );
 }
+
+#[test]
+fn a_false_else_if_leaves_its_jump() {
+    let code = compile("/proc/f(a, b)\n\tif (a) b = 1\n\telse if (0) b = 2\n\treturn b\n", "", "f");
+    assert_has(&code, &["SetVar arg(1)", "Jmp LAB_0000", "LAB_0001:"]);
+    // not when it comes before a live arm
+    let code = compile("/proc/f(a, b)\n\tif (0) b = 1\n\telse if (a) b = 2\n\treturn b\n", "", "f");
+    assert!(!code.contains("Jmp "), "{code}");
+}

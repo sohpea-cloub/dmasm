@@ -271,15 +271,24 @@ fn emit_statement_inner(
         {
             let mut live: Vec<(Spanned<Expression>, Block)> = vec![];
             let mut else_block = else_arm.clone();
+            // (a false arm after the last live one still leaves its jump to
+            // the end, as if there were an else)
+            let mut dropped_after = false;
             for (cond, block) in arms.iter() {
                 match super::fold::value(compiler, &cond.elem) {
-                    Some(c) if !c.truthy() => continue,
+                    Some(c) if !c.truthy() => dropped_after = !live.is_empty(),
                     Some(_) => {
                         else_block = Some(block.clone());
                         break;
                     }
-                    None => live.push((cond.clone(), block.clone())),
+                    None => {
+                        live.push((cond.clone(), block.clone()));
+                        dropped_after = false;
+                    }
                 }
+            }
+            if dropped_after && else_block.is_none() {
+                else_block = Some(Default::default());
             }
             if live.is_empty() {
                 if let Some(block) = &else_block {
