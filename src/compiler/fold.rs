@@ -72,6 +72,23 @@ pub(super) fn number(c: &Compiler, expr: &Expression) -> Option<f32> {
 /// The value of a constant expression, where folding it changes the code (a
 /// lone string or null literal is left alone).
 pub(super) fn constant(c: &Compiler, expr: &Expression) -> Option<Constant> {
+    // `&&`, `||` and `? :` are the operand they choose, which may be a const
+    // read alone (`7 && CONST` reads CONST's global)
+    match expr {
+        Expression::BinaryOp {
+            op: op @ (BinaryOp::And | BinaryOp::Or),
+            lhs,
+            rhs,
+        } => {
+            let decides = value(c, lhs)?.truthy() == (*op == BinaryOp::Or);
+            return constant(c, if decides { lhs } else { rhs });
+        }
+        Expression::TernaryOp { cond, if_, else_ } => {
+            let chosen = if value(c, cond)?.truthy() { if_ } else { else_ };
+            return constant(c, chosen);
+        }
+        _ => {}
+    }
     if let Expression::Base { term, follow } = expr {
         if follow.is_empty() && matches!(term.elem, Term::String(_) | Term::Null | Term::Prefab(_))
         {

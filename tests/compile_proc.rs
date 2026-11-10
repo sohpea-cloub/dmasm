@@ -675,3 +675,15 @@ fn constant_lists_are_true_in_a_test() {
     let code = compile("/proc/f(a, b)\n\treturn (list(a) ? a : b)\n", "", "f");
     assert_has(&code, &["GetVar arg(0)", "NewList 1", "Test"]);
 }
+
+#[test]
+fn a_const_chosen_by_a_constant_test_is_read_alone() {
+    // `7 && K` is K, read from its global, but `1 && 2` is 2
+    let types = "/datum/t\n\tvar/const/k = 1000\n";
+    for v in ["(7 && /datum/t::k)", "(/datum/t::k || \"abc\")", "(1 ? /datum/t::k : 2)"] {
+        let code = compile(&format!("{types}/proc/f()\n\treturn {v}\n"), "", "f");
+        assert_eq!(code, "GetVar global(\"k\")\nRet\nEnd", "{v}");
+    }
+    let code = compile(&format!("{types}/proc/f()\n\treturn (0 || /datum/t::k + 1)\n"), "", "f");
+    assert_eq!(code, "PushInt 1001\nRet\nEnd");
+}
