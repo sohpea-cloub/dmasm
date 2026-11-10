@@ -619,3 +619,13 @@ fn or_assign_saves_the_cache_for_some_values() {
         assert!(value(v).contains("PushCache"), "{v}: {}", value(v));
     }
 }
+
+#[test]
+fn safe_access_to_a_const_is_not_folded() {
+    // `a?.k` is null when a is, so it isn't the constant
+    let src = "/datum/t\n\tvar/const/k = 256\n/proc/f(datum/t/a)\n\tif (a?.k) return 1\n\treturn 2\n";
+    assert_has(
+        &compile(src, "", "f"),
+        &["GetVar arg(0)", "SetCacheJmpIfNull LAB_0003", "GetVar global(\"k\")", "LAB_0003:", "Test"],
+    );
+}

@@ -107,10 +107,19 @@ pub(super) fn value(c: &Compiler, expr: &Expression) -> Option<Constant> {
                 .iter()
                 .take_while(|f| matches!(f.elem, Follow::StaticField(_)))
                 .count();
-            // x.a.CONST
+            // x.a.CONST (`x?.CONST` is null when x is)
             let fields = follow
                 .iter()
-                .take_while(|f| matches!(f.elem, Follow::Field(..)))
+                .take_while(|f| {
+                    matches!(
+                        f.elem,
+                        Follow::Field(
+                            dreammaker::ast::PropertyAccessKind::Dot
+                                | dreammaker::ast::PropertyAccessKind::Colon,
+                            _
+                        )
+                    )
+                })
                 .count();
             let (mut v, follow) = if statics > 0 {
                 (
