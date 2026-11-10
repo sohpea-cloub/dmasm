@@ -56,6 +56,14 @@ fn emit_single(
 
                 EvalKind::Var(var) if is_writable(&var) => var,
 
+                // so is one read from a var that can't be written, as `&x` is
+                // (`*(&x)`, where a proc's code has it on the stack already)
+                EvalKind::Var(var) if op == UnaryOp::Dereference => {
+                    compiler.emit_ins(Instruction::GetVar(var));
+                    compiler.emit_ins(Instruction::SetVar(Variable::CacheKey));
+                    Variable::CacheKey
+                }
+
                 EvalKind::Field(builder, field) => builder.get_field(DMString(field.into())),
 
                 EvalKind::ListRef => {

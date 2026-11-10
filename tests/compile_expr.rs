@@ -184,3 +184,32 @@ fn without_a_scope_a_bare_name_is_a_global() {
         code
     );
 }
+
+#[test]
+fn a_pointer_made_in_place_is_read_through() {
+    use dmasm::Variable;
+    // As DreamMaker has it: the pointer goes in cache_key, and is read
+    // through that
+    let code = instructions("*(&x)", &["x"]);
+    assert_eq!(
+        &code[1..4],
+        &[
+            Instruction::GetVar(Variable::PtrRef(Box::new(Variable::Arg(0)))),
+            Instruction::SetVar(Variable::CacheKey),
+            Instruction::GetVar(Variable::PtrDeref(Box::new(Variable::CacheKey))),
+        ],
+        "{:?}",
+        code
+    );
+    // and written through
+    let code = instructions("*(&x) = 5", &["x"]);
+    assert!(
+        code.iter().any(|i| matches!(i, Instruction::SetVarExpr(Variable::PtrDeref(p)) if **p == Variable::CacheKey)
+            || matches!(i, Instruction::SetVar(Variable::PtrDeref(p)) if **p == Variable::CacheKey)),
+        "{:?}",
+        code
+    );
+    // A pointer held in a var is read through the var, as before
+    let code = instructions("*p", &["p"]);
+    assert_eq!(code[1], Instruction::GetVar(Variable::PtrDeref(Box::new(Variable::Arg(0)))), "{:?}", code);
+}
