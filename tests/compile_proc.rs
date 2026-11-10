@@ -687,3 +687,12 @@ fn a_const_chosen_by_a_constant_test_is_read_alone() {
     let code = compile(&format!("{types}/proc/f()\n\treturn (0 || /datum/t::k + 1)\n"), "", "f");
     assert_eq!(code, "PushInt 1001\nRet\nEnd");
 }
+
+#[test]
+fn goto_in_a_try_block_uses_try_jmp() {
+    let src = "/proc/f(a)\n\ttry\n\t\tif (a) goto l1\n\t\ta = 2\n\t\tl1:\n\t\ta += 1\n\tcatch\n\t\tif (a) goto l2\n\t\tl2:\n\treturn a\n";
+    let code = compile(src, "", "f");
+    assert!(code.contains("TryJmp USER_l1"), "{code}");
+    // not from the catch block
+    assert!(code.contains("JmpLoop USER_l2"), "{code}");
+}

@@ -766,7 +766,14 @@ fn emit_statement_inner(
             for _ in depth.max(1)..ctx(compiler).iterators {
                 compiler.emit_ins(Instruction::IterPop);
             }
-            compiler.emit_ins(Instruction::JmpLoop(Label::Named(format!("USER_{}", name))));
+            // (in a try block, wherever the label is, with TryJmp)
+            let label = Label::Named(format!("USER_{}", name));
+            let in_try = ctx(compiler).try_depth > 0;
+            compiler.emit_ins(if in_try {
+                Instruction::TryJmp(label)
+            } else {
+                Instruction::JmpLoop(label)
+            });
             Ok(())
         }
 
