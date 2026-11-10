@@ -207,12 +207,22 @@ pub struct ExprScope<'a> {
     pub has_src_var: &'a dyn Fn(&str) -> bool,
     /// Whether the object has a proc or verb of this name
     pub has_src_proc: &'a dyn Fn(&str) -> bool,
-    /// Whether the world has a global var of this name
-    pub has_global: &'a dyn Fn(&str) -> bool,
+    /// How to reach the world's global var of this name, if it has one
+    pub global: &'a dyn Fn(&str) -> Option<ExprGlobal>,
     /// The param that holds the world's list of global vars (`global.vars`),
-    /// which globals are read and written through by name: a var's id isn't
-    /// enough to tell a global from a type's var of the same name.
+    /// which its globals are read and written through by name: a var's name
+    /// isn't enough to tell a global's id from that of a type's var called
+    /// the same.
     pub globals: &'a str,
+}
+
+/// How a debugger's expression reaches a global var
+pub enum ExprGlobal {
+    /// By its name, through the world's list of globals
+    Listed,
+    /// By its var id: one that isn't on the world's list, which whoever runs
+    /// the expression knows to be a global (a hot reload added it)
+    Id(u32),
 }
 
 /// Compiles an expression for the debugger's evals, for the newest build
@@ -592,10 +602,7 @@ impl<'a> Compiler<'a> {
                             ident.clone(),
                         )));
                     }
-                    if (scope.has_global)(name) {
-                        return self.emit_global_by_name(name);
-                    }
-                    return Err(CompileError::UndefinedVar(name.to_owned()));
+                    return self.emit_global_by_name(name);
                 }
 
                 // Anything else is treated as a global var
@@ -607,10 +614,20 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    /// A global var read through the list of them that a debugger's
-    /// expression is given (see `ExprScope::globals`): `globals["name"]`
+    /// A global var in a debugger's expression: read through the list of
+    /// them that it's given (see `ExprScope::globals`), `globals["name"]`, or
+    /// by the id it's told
     fn emit_global_by_name(&mut self, name: &str) -> Result<EvalKind, CompileError> {
         let scope = self.expr_scope.expect("a global by name outside a debugger's expression");
+        match (scope.global)(name) {
+            None => return Err(CompileError::UndefinedVar(name.to_owned())),
+            Some(ExprGlobal::Id(id)) => {
+                let mut global = GlobalVar::named(name.as_bytes(), Some(String::new()));
+                global.id = Some(id);
+                return Ok(EvalKind::Var(Variable::Global(global)));
+            }
+            Some(ExprGlobal::Listed) => {}
+        }
         let Some(index) = self.params.iter().rposition(|x| *x == scope.globals) else {
             return Err(CompileError::UndefinedVar(scope.globals.to_owned()));
         };

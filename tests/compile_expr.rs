@@ -50,7 +50,7 @@ fn an_expression_ends_where_it_ends() {
 
 // With a scope: what a debugger knows of the frame the expression is for
 
-use dmasm::compiler::{compile_expr_in, CompileError, ExprScope};
+use dmasm::compiler::{compile_expr_in, CompileError, ExprGlobal, ExprScope};
 use dmasm::ByondVersion;
 
 /// Compiles for an object with vars `hp` and `name` and a proc `bump`, in a
@@ -60,7 +60,12 @@ fn scoped(code: &str, params: &[&str]) -> Result<Vec<Instruction>, CompileError>
     let scope = ExprScope {
         has_src_var: &|name| matches!(name, "hp" | "name"),
         has_src_proc: &|name| name == "bump",
-        has_global: &|name| matches!(name, "ticks" | "name"),
+        global: &|name| match name {
+            "ticks" | "name" => Some(ExprGlobal::Listed),
+            // One a hot reload added
+            "added" => Some(ExprGlobal::Id(77)),
+            _ => None,
+        },
         globals: "globals",
     };
     let mut params = params.to_vec();
@@ -118,12 +123,33 @@ fn a_global_is_read_and_written_through_the_globals_list() {
 }
 
 #[test]
+fn a_global_that_isnt_listed_is_read_by_its_id() {
+    for code in ["added", "global.added"] {
+        let ins = scoped(code, &[]).unwrap();
+        assert!(
+            matches!(&ins[1], Instruction::GetVar(dmasm::Variable::Global(global)) if global.id == Some(77)),
+            "{}: {:?}",
+            code,
+            ins
+        );
+    }
+    let ins = scoped("added = 3", &[]).unwrap();
+    assert!(
+        ins.iter().any(|i| matches!(i, Instruction::SetVarExpr(dmasm::Variable::Global(global)) if global.id == Some(77))),
+        "{:?}",
+        ins
+    );
+}
+
+#[test]
 fn a_name_nothing_has_is_an_error() {
     let error = scoped("nowhere + 1", &[]).unwrap_err();
     assert!(matches!(&error, CompileError::UndefinedVar(name) if name == "nowhere"), "{:?}", error);
     assert_eq!(error.to_string(), "undefined var: nowhere");
     // Not so for what's reached through something else
     assert!(scoped("hp.nowhere", &[]).is_ok());
+    let error = scoped("global.nowhere", &[]).unwrap_err();
+    assert!(matches!(&error, CompileError::UndefinedVar(name) if name == "nowhere"), "{:?}", error);
 }
 
 #[test]
