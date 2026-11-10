@@ -851,3 +851,10 @@ fn for_loop_separators_can_be_mixed() {
     assert_eq!(body("i = 1; i <= n, i++"), want);
     assert_eq!(body("i = 1, i <= n; i++"), want);
 }
+
+#[test]
+fn assert_keeps_raw_strings_as_written() {
+    // `#x` writes a raw string the way the source does
+    let code = compile("/proc/f(a)\n\tASSERT(a == @{\"brace\"} || a == @'one')\n", "", "f");
+    assert!(code.contains(r#"PushVal "a == @{\"brace\"} || a == @'one'""#), "{code}");
+}

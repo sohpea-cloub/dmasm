@@ -1,7 +1,7 @@
 From 09ec406a8b670dc37a20dce21e431c6be802c621 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sun, 8 Nov 2026 12:46:29 +0000
-Subject: [PATCH 01/17] Keep the as clause of a for-in loop
+Subject: [PATCH 01/18] Keep the as clause of a for-in loop
 
 The as clause right after the loop variable is read early as a key type, for
 for (k as T, v in L), so for (var/x as anything in L) lost it.
@@ -30,7 +30,7 @@ index b1349b7..5ead4a9 100644
 From fb908362b40ddf9305dd0d32edea8ee5ddb0f6de Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 13:52:06 +0000
-Subject: [PATCH 02/17] Parse empty arguments as null
+Subject: [PATCH 02/18] Parse empty arguments as null
 
 DreamMaker passes null for an argument left empty, as in f(a, , b). The
 parser now keeps those as null expressions (with an unknown location)
@@ -94,7 +94,7 @@ index 5ead4a9..18c636b 100644
 From e1163178a1778ad7c9a5f58fbcd312a358db969b Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 13:52:07 +0000
-Subject: [PATCH 03/17] Add Term::Alist for alist() calls
+Subject: [PATCH 03/18] Add Term::Alist for alist() calls
 
 alist(...) parsed to Term::List, so tools couldn't tell an /alist from a
 /list. It gets its own term now; dreamchecker types it as /alist.
@@ -191,7 +191,7 @@ index 18c636b..8db01b7 100644
 From 967fdc21d044f95402c8b5d07fbee5a95e983a61 Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 14:21:24 +0000
-Subject: [PATCH 04/17] Stringify macro arguments with their spacing
+Subject: [PATCH 04/18] Stringify macro arguments with their spacing
 
 #x now keeps the spaces the argument was written with, including trailing
 ones, the way DreamMaker does ("U(a || 1)", not "U ( a || 1 )").
@@ -317,7 +317,7 @@ index e573a4f..9c3de32 100644
 From cf08b9068d5ad3475bdd232c6a7273097dedc2f1 Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 14:23:18 +0000
-Subject: [PATCH 05/17] Guess the spacing of stringified tokens that came from
+Subject: [PATCH 05/18] Guess the spacing of stringified tokens that came from
  another macro
 
 Co-Authored-By: Claude <noreply@anthropic.com>
@@ -373,7 +373,7 @@ index 9c3de32..bec2d3b 100644
 From 7db982ad54092f526c5cbc8bb4151c1d26ac359d Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 14:25:02 +0000
-Subject: [PATCH 06/17] Stringify spacing: binary minus
+Subject: [PATCH 06/18] Stringify spacing: binary minus
 
 Co-Authored-By: Claude <noreply@anthropic.com>
 ---
@@ -424,7 +424,7 @@ index bec2d3b..13c24a0 100644
 From 4ee963bef745492426f9069e697b2985987cd165 Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 14:27:25 +0000
-Subject: [PATCH 07/17] Var flags anywhere in a var's path
+Subject: [PATCH 07/18] Var flags anywhere in a var's path
 
 DreamMaker reads var/list/static/x as a static list; only flags before the
 type were recognised.
@@ -466,7 +466,7 @@ index 7a6268c..702617a 100644
 From 8295e6e5d1afdc6a299ff438954430e30b1dc035 Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 14:29:10 +0000
-Subject: [PATCH 08/17] EXCEPTION() passes __FILE__ and __LINE__, as in BYOND's
+Subject: [PATCH 08/18] EXCEPTION() passes __FILE__ and __LINE__, as in BYOND's
  stddef.dm
 
 Co-Authored-By: Claude <noreply@anthropic.com>
@@ -505,7 +505,7 @@ index 845438d..10541ca 100644
 From 043615f99495e6fd96aa94f44dedf7654eb1466c Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 14:30:47 +0000
-Subject: [PATCH 09/17] A macro call's expansion is placed at its closing
+Subject: [PATCH 09/18] A macro call's expansion is placed at its closing
  parenthesis
 
 DreamMaker's __LINE__ in a call spanning lines is the last line.
@@ -536,7 +536,7 @@ index 13c24a0..1668873 100644
 From 3fa79dadb60862d729b7c793881ac51703ac2fec Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 14:58:27 +0000
-Subject: [PATCH 10/17] Raw strings get the escapes a normal string's text has
+Subject: [PATCH 10/18] Raw strings get the escapes a normal string's text has
 
 Term::String holds a string as written, escapes and all. A raw string's
 text was stored as is, so a backslash in @"..." read as an escape.
@@ -583,7 +583,7 @@ index 8db01b7..99d80e1 100644
 From 3a25866c6cc10bcda5aef58e85569210d5f12681 Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 16:15:34 +0000
-Subject: [PATCH 11/17] Parameter: remember a leading slash (BYOND doesn't
+Subject: [PATCH 11/18] Parameter: remember a leading slash (BYOND doesn't
  declare such a parameter)
 
 Co-Authored-By: Claude <noreply@anthropic.com>
@@ -653,7 +653,7 @@ index 99d80e1..4044d00 100644
 From 35c87676c0b7f2c0cd229b5b1a994b49c219494c Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 16:58:49 +0000
-Subject: [PATCH 12/17] Preprocessor: #pragma takes the rest of its line
+Subject: [PATCH 12/18] Preprocessor: #pragma takes the rest of its line
  (#pragma ignore unused_var left a stray token in the code)
 
 Co-Authored-By: Claude <noreply@anthropic.com>
@@ -686,7 +686,7 @@ index 1668873..8ce0541 100644
 From 8328be051f5f95a86fab83c715b07879c044f575 Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 17:15:08 +0000
-Subject: [PATCH 13/17] Preprocessor: __LINE__ in a macro body counts the line
+Subject: [PATCH 13/18] Preprocessor: __LINE__ in a macro body counts the line
  breaks inside the arguments before it
 
 Co-Authored-By: Claude <noreply@anthropic.com>
@@ -745,7 +745,7 @@ index 8ce0541..6030434 100644
 From 9410b09cdbaf6bea5f78218270842108cf601dcf Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 19:23:07 +0000
-Subject: [PATCH 14/17] Preprocessor: __FILE__ is relative to the .dme's
+Subject: [PATCH 14/18] Preprocessor: __FILE__ is relative to the .dme's
  directory, wherever the .dme is
 
 DreamMaker gives __FILE__ relative to the .dme. It came out absolute when
@@ -783,7 +783,7 @@ index 6030434..cb8c749 100644
 From 0eca5b3e78890105331ca08d6bab45e7a8018f23 Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Tue, 10 Nov 2026 01:04:40 +0000
-Subject: [PATCH 15/17] Parser: a switch with nothing under it has no cases
+Subject: [PATCH 15/18] Parser: a switch with nothing under it has no cases
 
 DreamMaker takes `switch(x)` with no cases under it; the parser
 wanted a block and dropped the proc's code.
@@ -819,7 +819,7 @@ index 4044d00..aac0183 100644
 From 59ecd0fd382345f53ae6fb82f597b524e2fec35a Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Tue, 10 Nov 2026 01:38:57 +0000
-Subject: [PATCH 16/17] Preprocessor: #x gives number literals as they were
+Subject: [PATCH 16/18] Preprocessor: #x gives number literals as they were
  written
 
 DreamMaker stringifies a macro argument's numbers as the source has them
@@ -932,7 +932,7 @@ index cb8c749..cefdd48 100644
 From 2bb84525440e03ce419f0386dd5d6d03637c4e90 Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Tue, 10 Nov 2026 04:47:40 +0000
-Subject: [PATCH 17/17] parser: for(a; b, c) and for(a, b; c)
+Subject: [PATCH 17/18] parser: for(a; b, c) and for(a, b; c)
 
 DreamMaker takes either separator in the second place of a three-part for
 loop, the same as for(a; b; c).
@@ -978,6 +978,196 @@ index aac0183..fb5dd8d 100644
                  };
                  // Increment exists
                  if inc.is_some() {
+-- 
+2.47.3
+
+
+From ddc5e924a0dc53b0b74c78de51d428f96cfdae41 Mon Sep 17 00:00:00 2001
+From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
+Date: Tue, 10 Nov 2026 09:25:40 +0000
+Subject: [PATCH 18/18] preprocessor: #x keeps raw strings as written
+
+`#x` (ASSERT's message) gave `@{"a"}` as `@"a"`; DreamMaker keeps the
+source text, as it does numbers'. The lexer notes a raw string's text when it
+doesn't print that way.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ crates/dreammaker/src/error.rs        | 14 ++++----
+ crates/dreammaker/src/lexer.rs        | 51 ++++++++++++++++++++-------
+ crates/dreammaker/src/preprocessor.rs |  6 ++--
+ 3 files changed, 49 insertions(+), 22 deletions(-)
+
+diff --git a/crates/dreammaker/src/error.rs b/crates/dreammaker/src/error.rs
+index 4d3985d..220b855 100644
+--- a/crates/dreammaker/src/error.rs
++++ b/crates/dreammaker/src/error.rs
+@@ -48,7 +48,7 @@ pub struct Context {
+     io_time: Cell<std::time::Duration>,
+     /// Number literals written otherwise than they print (`1e3`, `1.0`), by
+     /// where they start, for `#x` to give them as written.
+-    number_texts: RefCell<std::collections::BTreeMap<Location, Box<str>>>,
++    written_texts: RefCell<std::collections::BTreeMap<Location, Box<str>>>,
+ }
+ 
+ impl FileList {
+@@ -325,14 +325,14 @@ impl Context {
+     // ------------------------------------------------------------------------
+     // Errors
+ 
+-    /// Notes how the number literal at `at` was written.
+-    pub fn note_number_text(&self, at: Location, text: &str) {
+-        self.number_texts.borrow_mut().insert(at, text.into());
++    /// Notes how the literal (a number, a raw string) at `at` was written.
++    pub fn note_written_text(&self, at: Location, text: &str) {
++        self.written_texts.borrow_mut().insert(at, text.into());
+     }
+ 
+-    /// How the number literal at `at` was written, if it doesn't print that way.
+-    pub fn number_text(&self, at: Location) -> Option<Box<str>> {
+-        self.number_texts.borrow().get(&at).cloned()
++    /// How the literal at `at` was written, if it doesn't print that way.
++    pub fn written_text(&self, at: Location) -> Option<Box<str>> {
++        self.written_texts.borrow().get(&at).cloned()
+     }
+ 
+     /// Push an error or other diagnostic to the context.
+diff --git a/crates/dreammaker/src/lexer.rs b/crates/dreammaker/src/lexer.rs
+index 7dde4bd..d31b840 100644
+--- a/crates/dreammaker/src/lexer.rs
++++ b/crates/dreammaker/src/lexer.rs
+@@ -1201,9 +1201,10 @@ impl<'ctx> Lexer<'ctx> {
+         }
+     }
+ 
+-    fn read_raw_string_inner(&mut self, terminator: &[u8]) -> Token {
++    fn read_raw_string_inner(&mut self, terminator: &[u8]) -> (Token, Vec<u8>) {
+         let start_loc = self.location();
+         let mut buf = Vec::new();
++        let mut terminated = false;
+         loop {
+             match self.next() {
+                 Some(ch) => buf.push(ch),
+@@ -1215,19 +1216,30 @@ impl<'ctx> Lexer<'ctx> {
+             if buf.ends_with(terminator) {
+                 let len = buf.len() - terminator.len();
+                 buf.truncate(len);
++                terminated = true;
+                 break;
+             }
+         }
+-        Token::String(Ident::from(from_utf8_or_latin1(buf)), StringKind::Raw)
++        let mut written = buf.clone();
++        if terminated {
++            written.extend_from_slice(terminator);
++        }
++        (Token::String(Ident::from(from_utf8_or_latin1(buf)), StringKind::Raw), written)
++    }
++
++    /// A raw string, and its source text from the `@`
++    fn read_raw_string(&mut self) -> (Token, String) {
++        let (token, written) = self.read_raw_string_body();
++        (token, from_utf8_or_latin1([b"@".as_slice(), &written].concat()))
+     }
+ 
+-    fn read_raw_string(&mut self) -> Token {
++    fn read_raw_string_body(&mut self) -> (Token, Vec<u8>) {
+         // We just got the '@'. Let's see what the next character is.
+         match self.next() {
+             // @<LF> - error
+             Some(b'\n') | None => {
+                 self.error("unterminated raw string").register(self.context);
+-                Token::empty_string()
++                (Token::empty_string(), vec![])
+             },
+             // @(<terminator string>)<string><terminator string> - no LF in contents
+             Some(b'(') => {
+@@ -1240,28 +1252,36 @@ impl<'ctx> Lexer<'ctx> {
+                         None => {
+                             self.error("unterminated raw string terminator")
+                                 .register(self.context);
+-                            return Token::empty_string();
++                            return (Token::empty_string(), vec![]);
+                         },
+                     }
+                 }
+                 if terminator.is_empty() {
+                     self.error("empty raw string terminator")
+                         .register(self.context);
+-                    return Token::empty_string();
++                    return (Token::empty_string(), vec![]);
+                 }
+-                self.read_raw_string_inner(&terminator)
++                let (token, rest) = self.read_raw_string_inner(&terminator);
++                (token, [b"(".as_slice(), &terminator, b")", &rest].concat())
+             },
+             Some(b'{') => match self.next() {
+                 // @{"<string>"} - LF allowed in contents
+-                Some(b'"') => self.read_raw_string_inner(b"\"}"),
++                Some(b'"') => {
++                    let (token, rest) = self.read_raw_string_inner(b"\"}");
++                    (token, [b"{\"".as_slice(), &rest].concat())
++                },
+                 // @{<not ">{ -
+                 other => {
+                     self.put_back(other);
+-                    self.read_raw_string_inner(b"{")
++                    let (token, rest) = self.read_raw_string_inner(b"{");
++                    (token, [b"{".as_slice(), &rest].concat())
+                 },
+             },
+             // @<terminator char><string><terminator char>
+-            Some(terminator) => self.read_raw_string_inner(&[terminator]),
++            Some(terminator) => {
++                let (token, rest) = self.read_raw_string_inner(&[terminator]);
++                (token, [&[terminator][..], &rest].concat())
++            },
+         }
+     }
+ 
+@@ -1438,7 +1458,7 @@ impl<'ctx> Iterator for Lexer<'ctx> {
+                     b'0'..=b'9' => {
+                         let (token, text) = self.read_number(first);
+                         if text.as_deref().is_some_and(|t| t != token.to_string()) {
+-                            self.context.note_number_text(start, &text.unwrap());
++                            self.context.note_written_text(start, &text.unwrap());
+                         }
+                         Some(locate!(token))
+                     },
+@@ -1463,7 +1483,14 @@ impl<'ctx> Iterator for Lexer<'ctx> {
+                         skip_newlines = true;
+                         continue;
+                     },
+-                    b'@' => Some(locate!(self.read_raw_string())),
++                    b'@' => {
++                        let (token, text) = self.read_raw_string();
++                        // (as written, for `#x`: `@{"a"}` prints as `@"a"`)
++                        if text != token.to_string() {
++                            self.context.note_written_text(start, &text);
++                        }
++                        Some(locate!(token))
++                    },
+                     _ => {
+                         if !found_illegal {
+                             let mut msg = format!("illegal byte 0x{first:x}");
+diff --git a/crates/dreammaker/src/preprocessor.rs b/crates/dreammaker/src/preprocessor.rs
+index cefdd48..ae1f474 100644
+--- a/crates/dreammaker/src/preprocessor.rs
++++ b/crates/dreammaker/src/preprocessor.rs
+@@ -1415,10 +1415,10 @@ impl<'ctx> Preprocessor<'ctx> {
+                                                         };
+                                                         string.extend(std::iter::repeat(' ').take(gap));
+                                                     }
+-                                                    // a number as it was written (`1e3`)
++                                                    // a number or raw string as it was written (`1e3`, `@{"a"}`)
+                                                     let written = match (each, spans) {
+-                                                        (Token::Int(_) | Token::Float(_), Some(spans)) => {
+-                                                            self.context.number_text(spans[j].0)
++                                                        (Token::Int(_) | Token::Float(_) | Token::String(_, StringKind::Raw), Some(spans)) => {
++                                                            self.context.written_text(spans[j].0)
+                                                         },
+                                                         _ => None,
+                                                     };
 -- 
 2.47.3
 
