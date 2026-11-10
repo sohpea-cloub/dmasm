@@ -2621,6 +2621,10 @@ fn var_default(
         if !changes.consts.iter().any(|c| c == name) {
             changes.consts.push(name.to_owned());
         }
+        // (a built-in one, like `parent_type`, isn't a global)
+        if builtin {
+            return;
+        }
         let declaring = declaration.ty();
         let path = declaring.get().path.clone();
         if changes.redeclared.iter().any(|r| r.type_path == path && r.var == name) {

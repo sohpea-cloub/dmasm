@@ -1341,3 +1341,13 @@ fn a_changed_default_recompiles_type_scope_users() {
     assert_eq!(changes.defaults_changed, ["size"]);
     assert_eq!(reloaded(&changes), [key("/a", 0)]);
 }
+
+#[test]
+fn a_new_parent_type_is_refused_and_nothing_else() {
+    let before = "/datum/a\n/datum/b\n/datum/a/c\n\tvar/x = 1\n";
+    let after = "/datum/a\n/datum/b\n/datum/a/c\n\tparent_type = /datum/b\n\tvar/x = 1\n";
+    let changes = changes("parent-type", before, after);
+    assert!(!changes.refused.is_empty(), "{:?}", changes);
+    // (parent_type is a built-in const, not a global to set)
+    assert!(changes.redeclared.is_empty(), "{:?}", changes.redeclared);
+}
