@@ -661,6 +661,10 @@ fn emit_overloaded(
                 let known = super::fold::number(compiler, &args[0])
                     .and_then(|x| super::versions::nan_test(name, x));
                 if let Some(result) = known {
+                    compiler.warn(&format!(
+                        "{name}() of a number known when compiling: this build's DreamMaker gives the \
+                         flag the last test left, not the answer, and dmasm does the same"
+                    ));
                     compiler.emit_ins(Instruction::PushInt(result as i32));
                     compiler.emit_ins(Instruction::GetFlag);
                     return Ok(Some(EvalKind::Stack));

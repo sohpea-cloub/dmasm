@@ -900,3 +900,56 @@ fn a_folded_default_from_another_file_still_names_the_file_again() {
         ["DbgFile \"test.dm\"", "DbgLine 2", "PushInt 4", "SetVar arg(0)", "DbgFile \"test.dm\"", "DbgLine 3", "PushInt 2", "SetVar arg(0)", "End"]
     );
 }
+
+/// The warnings for global proc f of `code`, compiled for `byond`
+fn warnings_for(code: &str, byond: dmasm::ByondVersion) -> Vec<String> {
+    let ctx = dreammaker::Context::default();
+    let pp = dreammaker::Preprocessor::from_buffer(&ctx, "test.dm".into(), code.to_owned());
+    let mut parser = dreammaker::Parser::new(&ctx, pp);
+    parser.enable_procs();
+    let tree = parser.parse_object_tree();
+    let value = tree.root().get().procs.get("f").unwrap().value.last().unwrap();
+    let source = ProcSource {
+        tree: &tree,
+        ty: tree.root(),
+        name: "f",
+        value,
+        file: "test.dm",
+        debug_info: false,
+        index: None,
+        byond,
+        file_names: None,
+    };
+    compile_proc(&source).unwrap().warnings
+}
+
+#[test]
+fn deliberate_differences_and_copied_quirks_are_warned_about() {
+    let latest = dmasm::ByondVersion::LATEST;
+    let v = |build| dmasm::ByondVersion::new(516, build);
+    let warned = |code: &str, byond, what: &str| {
+        let w = warnings_for(code, byond);
+        assert!(w.iter().any(|w| w.contains(what)), "{code:?} on {byond:?}: {w:?}");
+    };
+    let quiet = |code: &str, byond| {
+        let w = warnings_for(code, byond);
+        assert!(w.is_empty(), "{code:?} on {byond:?}: {w:?}");
+    };
+    let types = "/datum/t\n\tvar/n = 1\n\tvar/list/L = list(1)\n\tvar/datum/t/o\n\tproc/g(x)\n";
+    // differences
+    warned("/proc/f(t = world.fps/10)\n\treturn t\n", latest, "reads it as a path");
+    quiet("/proc/f(t = 1/10)\n\treturn t\n", latest);
+    warned(&format!("{types}/proc/f(datum/t/a, datum/t/b)\n\ta?.g(b?.n)?.n = 1\n"), latest, "on its receiver");
+    warned(&format!("{types}/proc/f(datum/t/a)\n\ta?.n ||= 1\n"), v(1672), "before 516.1673");
+    quiet(&format!("{types}/proc/f(datum/t/a)\n\ta?.n ||= 1\n"), v(1673));
+    let pointer = "/proc/f()\n\tvar/list/L = list(1, 2)\n\tvar/p = &L\n\t*p[1] = 5\n";
+    warned(pointer, v(1668), "leaves the index out");
+    quiet(pointer, v(1667));
+    warned("/proc/f(x)\n\treturn (-1e10) ^ x\n", latest, "32-bit range");
+    // DreamMaker's quirks, copied
+    warned("/proc/f()\n\treturn isnan(1)\n", v(1659), "the flag the last test left");
+    quiet("/proc/f()\n\treturn isnan(1)\n", v(1672));
+    warned(&format!("{types}/proc/f(datum/t/a, datum/t/b)\n\ta?.L[1] += b.n\n"), v(1684), "before 516.1685");
+    quiet(&format!("{types}/proc/f(datum/t/a, datum/t/b)\n\ta?.L[1] += b.n\n"), v(1685));
+    quiet(&format!("{types}/proc/f(datum/t/a)\n\ta?.L[1] += 2\n"), v(1684));
+}

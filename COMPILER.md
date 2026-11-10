@@ -95,11 +95,35 @@ These are accepted as equivalent by the comparison:
   `/obj/structure/mineral_door/wood/open`); SpacemanDMM makes the subtype the code means.
 - **Empty procs at the end of a file.** DreamMaker's debug info names the next file
   included as theirs (debug info only).
+- **`*p[i] = x` from 516.1668.** DreamMaker leaves the index out and writes through
+  whatever the cache holds (a runtime error, or the wrong place); the compiler writes
+  the element.
 - **Constants beyond 32 bits at a bit operator.** For `&`, `|`, `^`, `<<` and `>>`
   DreamMaker keeps 24 bits of a constant; out of the 32-bit range it makes them
   erratically, and not the same on every build (`-3e9` is 1, `2147483648` is 0, `1e10`
   16777215, `-2147483904` 0 on 515 and 1 on 516). The compiler takes the low 24 bits of
   the nearest 32-bit integer, and warns (`CompiledProc::warnings`, a reload's warnings).
+
+## Warnings
+
+`CompiledProc::warnings` (a reload passes them on among its warnings) says where the
+compiled code doesn't do what DreamMaker's would, on purpose, and where it copies a
+DreamMaker quirk that changes what the code does:
+
+- differences (above): a parameter default `a.b/N` (which DreamMaker reads as a path
+  written without spaces), a proc called through `?.` whose arguments use the cache,
+  `?.` in `||=`/`&&=` before 516.1673, `*p[i] = x` from 516.1668 (DreamMaker leaves the
+  index out; the compiler writes the element), a constant beyond 32 bits at a bit
+  operator;
+- quirks copied: `isnan()`/`isinf()` of a known number where the build gives the last
+  test's flag (516.1648 to 516.1669, and 516.1671), and a list element changed through
+  `?.` with a value that uses the cache before 516.1685 (the list is read from what the
+  value left in the cache).
+
+Not warned about: debug info (which file and line a runtime error names), and
+differences only in encodings. On the corpora the warnings are tgstation's 35 `x/10`
+defaults (37 on its 515.1637 build) and, on its 2025 builds, one `?.` list element
+(`module?.action_comps[circuit_component] -= REF(pinner)`).
 
 ## How DreamMaker compiles things (that the compiler copies)
 

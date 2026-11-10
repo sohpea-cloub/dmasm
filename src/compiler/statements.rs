@@ -40,6 +40,13 @@ pub(super) fn emit_proc_body(
         compiler.emit_ins(Instruction::Test);
         compiler.emit_ins(Instruction::Jz(Label::Named(skip.clone())));
         compiler.emit_ins(Instruction::DbgLine(param.location.line));
+        if path_division(default) {
+            compiler.warn(&format!(
+                "parameter {}'s default divides a var by a number: written without spaces \
+                 (`a.b/10`), DreamMaker reads it as a path and leaves the division out; dmasm divides",
+                param.name
+            ));
+        }
         // (`datum/x = new` makes the parameter's type)
         compiler.implicit_type = implicit_type_for(compiler, &param.var_type.type_path.to_string());
         let kind = compiler.emit_expr(default.clone());
@@ -1486,6 +1493,10 @@ pub(super) fn emit_safe_chain_write(
                 .iter()
                 .any(|n| matches!(n, Node::Instruction(i, _) if super::procs::touches_cache(i)))
             {
+                compiler.warn(
+                    "a proc called through `?.` whose arguments use the cache: DreamMaker calls it \
+                     on what the arguments left there; dmasm calls it on its receiver",
+                );
                 compiler
                     .nodes
                     .insert(call, Node::Instruction(Instruction::PushCache, ()));
@@ -1551,6 +1562,9 @@ pub(super) fn emit_safe_chain_write(
         }
         (Some(fields), SafeWrite::Change(write), Some(index)) => {
             let restore_first = compiler.byond.at_least(super::versions::SAFE_ELEMENT_CACHE);
+            if !restore_first {
+                warn_list_from_cache(compiler);
+            }
             if restore_first {
                 compiler.emit_ins(Instruction::PopCache);
             }
@@ -1567,8 +1581,17 @@ pub(super) fn emit_safe_chain_write(
             ends.pop().map(|end| compiler.emit_label(end));
         }
         (Some(fields), SafeWrite::Logical { or }, index) => {
+            if !compiler.byond.at_least(super::versions::SAFE_LOGICAL_ASSIGN) {
+                compiler.warn(
+                    "`?.` in `||=` or `&&=`: before 516.1673 DreamMaker leaves out its null tests (a runtime \
+                 error on null, and the first object's var with two `?.`); dmasm keeps them",
+                );
+            }
             let restore_first = index.is_none()
                 || compiler.byond.at_least(super::versions::SAFE_ELEMENT_CACHE);
+            if !restore_first {
+                warn_list_from_cache(compiler);
+            }
             if restore_first {
                 compiler.emit_ins(Instruction::PopCache);
             }
@@ -1776,6 +1799,7 @@ fn emit_expr_statement_inner(compiler: &mut Compiler, expr: &Expression) -> Resu
             }
             emit_value(compiler, rhs)?;
             compiler.implicit_type = None;
+            warn_pointer_index(compiler, lhs);
             // (no line for the place of `-=` and the like; `=` to a list
             // element gets one)
             compiler.place = *op != AssignOp::Assign;
@@ -2100,6 +2124,12 @@ pub(super) fn emit_safe_logical_assign(
     if !chain.segments.is_empty() || chain.index.is_some() || fields.is_empty() {
         return Ok(false);
     }
+    if !compiler.byond.at_least(super::versions::SAFE_LOGICAL_ASSIGN) {
+        compiler.warn(
+            "`?.` in `||=` or `&&=`: before 516.1673 DreamMaker leaves out its null tests (a runtime \
+                 error on null, and the first object's var with two `?.`); dmasm keeps them",
+        );
+    }
     let mut builder = super::chain_builder::ChainBuilder::begin(Variable::Cache);
     for f in &fields[..fields.len() - 1] {
         builder.append(crate::operands::DMString(f.clone().into_bytes()));
@@ -2135,4 +2165,53 @@ pub(super) fn emit_safe_logical_assign(
     compiler.emit_ins(Instruction::SetVarExpr(var));
     compiler.emit_label(end);
     Ok(true)
+}
+
+/// A parameter default DreamMaker reads as a path when it's written without
+/// spaces: a var or a field of one (`a.b`), divided by a number
+fn path_division(default: &Expression) -> bool {
+    let Expression::BinaryOp { op: dreammaker::ast::BinaryOp::Div, lhs, rhs } = strip_parens(default) else {
+        return false;
+    };
+    let name_chain = matches!(&**lhs, Expression::Base { term, follow }
+        if matches!(term.elem, Term::Ident(_))
+            && follow.iter().all(|f| matches!(f.elem, Follow::Field(dreammaker::ast::PropertyAccessKind::Dot, _))));
+    let number = matches!(&**rhs, Expression::Base { term, follow }
+        if matches!(term.elem, Term::Int(_) | Term::Float(_))
+            && follow.iter().all(|f| matches!(f.elem, Follow::Unary(UnaryOp::Neg))));
+    name_chain && number
+}
+
+/// Before 516.1685 the list of `a?.L[k] += v` is read from the cache, which
+/// the value has changed when it uses the cache itself
+fn warn_list_from_cache(compiler: &Compiler) {
+    let since = compiler
+        .nodes
+        .iter()
+        .rposition(|n| matches!(n, Node::Instruction(Instruction::PushCache, _)))
+        .map_or(0, |i| i + 1);
+    if compiler.nodes[since..]
+        .iter()
+        .any(|n| matches!(n, Node::Instruction(i, _) if super::procs::touches_cache(i)))
+    {
+        compiler.warn(
+            "a list element changed through `?.` with a value that uses the cache: before 516.1685 \
+             DreamMaker reads the list from what the value left there, and dmasm does the same",
+        );
+    }
+}
+
+/// `*p[i] = x`: from 516.1668 DreamMaker leaves the index out
+pub(super) fn warn_pointer_index(compiler: &Compiler, place: &Expression) {
+    if let Expression::Base { follow, .. } = strip_parens(place) {
+        if compiler.byond.at_least(super::versions::POINTER_INDEX_DROPPED)
+            && follow.iter().any(|f| matches!(f.elem, Follow::Index(..)))
+            && follow.iter().any(|f| matches!(f.elem, Follow::Unary(UnaryOp::Dereference)))
+        {
+            compiler.warn(
+                "`*p[i] = x`: from 516.1668 DreamMaker leaves the index out (it writes through \
+                 whatever the cache holds); dmasm writes the element",
+            );
+        }
+    }
 }

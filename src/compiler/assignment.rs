@@ -232,6 +232,7 @@ pub(super) fn emit(
     if peek_is_conditional(&lhs) {
         return emit_conditional(compiler, op, lhs, rhs);
     }
+    super::statements::warn_pointer_index(compiler, &lhs);
 
     if compiler.proc.is_some() {
         if let Some(kind) = emit_proc_assignment(compiler, op, &lhs, &rhs)? {

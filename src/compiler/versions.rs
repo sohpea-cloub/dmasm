@@ -33,6 +33,14 @@ const NEW_IN_516: &[&str] = &[
 /// before it the list is read from whatever the value left in the cache.
 pub(super) const SAFE_ELEMENT_CACHE: u32 = 1685;
 
+/// The first build that keeps `?.`'s null tests in `a?.b ||= v` and `&&=`;
+/// before it DreamMaker leaves them out (dmasm keeps them: a warning).
+pub(super) const SAFE_LOGICAL_ASSIGN: u32 = 1673;
+
+/// The first build whose DreamMaker drops the index of `*p[i] = x` (writes
+/// through whatever the cache holds); dmasm writes `(*p)[i]` (a warning).
+pub(super) const POINTER_INDEX_DROPPED: u32 = 1668;
+
 /// The first build with `__PROC__`.
 pub(super) const PROC_MACRO: u32 = 1644;
 
