@@ -182,7 +182,7 @@ checkout at `../SpacemanDMM` that has these. `patches/spacemandmm.patch` holds t
 - `Term::Alist` for `alist(...)` (it parsed as `list(...)`).
 - Empty arguments, `f(a, , b)`, kept as nulls (they were dropped, shifting the rest).
 - The `as` clause of `for (var/x as T in L)` (it was dropped).
-- Macro stringification spacing, `__LINE__` in a macro call and in a macro's body (the
+- Macro stringification spacing and number literals as written (`#x` of `1e3`), `__LINE__` in a macro call and in a macro's body (the
   line of the `)` plus the line breaks inside the arguments before it), `EXCEPTION()`'s
   file and line, raw strings, var flags anywhere in a path, `#pragma` taking the rest of
   its line, and `Parameter::absolute`.

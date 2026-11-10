@@ -650,3 +650,9 @@ fn hashes_of_text_fold() {
     let code = compile("/proc/f()\n\treturn md5(1)\n", "", "f");
     assert_has(&code, &["PushInt 1", "Md5"]);
 }
+
+#[test]
+fn assert_gives_numbers_as_written() {
+    let code = compile("/proc/f(n)\n\tASSERT(n > 1e3 + 0.50)\n", "", "f");
+    assert!(code.contains("PushVal \"n > 1e3 + 0.50\""), "{code}");
+}
