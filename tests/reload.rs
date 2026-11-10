@@ -1390,3 +1390,80 @@ fn a_removed_name_goes_back_to_each_types_own() {
         ]
     );
 }
+
+/// The changes when types.dm goes from `before` to `after`, code.dm (which
+/// includes it) being `code`; only types.dm counts as edited.
+fn types_changes(name: &str, code: &str, before: &str, after: &str) -> Changes {
+    let world = World::new(name, &format!("{code}#include \"types.dm\"\n"));
+    std::fs::write(world.dir.join("code/types.dm"), before).unwrap();
+    let old = world.parse();
+    std::fs::write(world.dir.join("code/types.dm"), after).unwrap();
+    let new = world.parse();
+    let edited: HashSet<PathBuf> = vec![PathBuf::from("code/types.dm")].into_iter().collect();
+    diff(&old, &new, Some(&edited))
+}
+
+#[test]
+fn a_type_scope_default_that_moves_moves_its_users_lines() {
+    // `/datum/u::x` records the default's line: it moves, in a file not edited
+    let code = "\n\n\n/proc/f()\n\treturn /datum/u::x\n";
+    let changes = types_changes("moved-default", code, "/datum/u\n\tvar/x = 3\n", "\n/datum/u\n\tvar/x = 3\n");
+    assert!(changes.reloads.is_empty(), "{:?}", reloaded(&changes));
+    assert_eq!(changes.line_moves.len(), 1, "{:?}", changes.line_moves);
+    assert_eq!(changes.line_moves[0].proc, key("/f", 0));
+    assert_eq!(changes.line_moves[0].lines, [(2, 3), (5, 5)]);
+}
+
+#[test]
+fn a_type_scope_default_whose_lines_clash_is_compiled_again() {
+    // f's own line 2 and the default's line 2, in two files: moving one of
+    // them can't be done line for line
+    let changes = types_changes(
+        "clashing-default",
+        "/proc/f()\n\treturn /datum/u::x\n",
+        "/datum/u\n\tvar/x = 3\n",
+        "\n/datum/u\n\tvar/x = 3\n",
+    );
+    assert_eq!(reloaded(&changes), [key("/f", 0)]);
+    assert!(changes.line_moves.is_empty(), "{:?}", changes.line_moves);
+}
+
+#[test]
+fn a_type_scope_default_moved_to_another_file_is_compiled_again() {
+    // Its debug info names the file the default is in now
+    let world = World::new("default-to-code", "#include \"types.dm\"\n/proc/f()\n\treturn /datum/u::x\n");
+    std::fs::write(world.dir.join("code/types.dm"), "/datum/u\n\tvar/x = 3\n").unwrap();
+    let old = world.parse();
+    std::fs::write(world.dir.join("code/types.dm"), "").unwrap();
+    world.write("#include \"types.dm\"\n/proc/f()\n\treturn /datum/u::x\n/datum/u\n\tvar/x = 3\n");
+    let new = world.parse();
+    let changes = diff(&old, &new, None);
+    assert_eq!(reloaded(&changes), [key("/f", 0)]);
+}
+
+#[test]
+fn a_moved_default_read_with_scope_needs_the_full_read() {
+    // An edit above a default that `/datum/u::x` reads moves it: the file on
+    // its own can't say where to, so the whole code is read
+    let world = World::new(
+        "moved-default-one-file",
+        "/proc/g()\n\treturn 1\n/datum/u\n\tvar/x = 3\n/datum/w\n\tvar/name = \"w\"\n/proc/f()\n\treturn /datum/u::x\n",
+    );
+    let file = std::path::Path::new("code/code.dm");
+    let mut old = world.parse();
+    world.write("/proc/g()\n\tworld.log << 0\n\treturn 1\n/datum/u\n\tvar/x = 3\n/datum/w\n\tvar/name = \"w\"\n/proc/f()\n\treturn /datum/u::x\n");
+    match old.reload_file(&world.dir, file) {
+        Ok(_) => panic!("reloaded on its own"),
+        Err(e) => assert!(e.contains("/f reads a var default with :: that moved"), "{e}"),
+    }
+    // A moved default nothing reads with `::` (`w`'s name: `::name` reads no
+    // name of /datum/w) is fine
+    let world = World::new(
+        "moved-unread-default",
+        "/proc/g()\n\treturn 1\n/datum/w\n\tvar/name = \"w\"\n/proc/f(obj/o)\n\treturn o::name\n",
+    );
+    let mut old = world.parse();
+    world.write("/proc/g()\n\tworld.log << 0\n\treturn 1\n/datum/w\n\tvar/name = \"w\"\n/proc/f(obj/o)\n\treturn o::name\n");
+    let reload = old.reload_file(&world.dir, file).unwrap();
+    assert_eq!(reloaded(&reload.changes), [key("/g", 0)]);
+}

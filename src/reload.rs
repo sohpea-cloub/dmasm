@@ -416,6 +416,9 @@ pub struct Changes {
     /// Vars whose defaults changed: the code that reads one as `/type::var`
     /// has it compiled in, and is compiled again.
     pub defaults_changed: Vec<String>,
+    /// Vars whose defaults are written somewhere else now: the code that
+    /// reads one as `/type::var` records where (its file and line).
+    pub defaults_moved: Vec<String>,
     /// Vars declared with another type now (or SpacemanDMM's checks, or
     /// another way), which matters to the code that uses them: those procs
     /// whose code changes are among the reloads.
@@ -481,6 +484,16 @@ pub struct Snapshot {
     patched: HashMap<ProcKey, ProcValue>,
     /// The build the code is compiled for
     byond: ByondVersion,
+    /// The `.dme`'s directory, when parsed from one
+    root: Option<PathBuf>,
+    /// The names each file reads with `::` (`/type::name`), and on which
+    /// lines, from its text
+    scope_names: HashMap<FileId, Vec<(String, u32)>>,
+    /// The procs defined in each file, once asked for
+    procs_by_file: std::sync::OnceLock<HashMap<FileId, Vec<ProcKey>>>,
+    /// The defaults (file name, line) each proc's code records, once asked
+    /// for (see `reads_moved_default`)
+    default_lines: std::sync::Mutex<HashMap<ProcKey, Vec<(Vec<u8>, u32)>>>,
 }
 
 /// What changed in one file, parsed again on its own (see
@@ -489,6 +502,9 @@ pub struct FileReload {
     pub changes: Changes,
     /// The file's definitions as they are now
     patched: Vec<(ProcKey, ProcValue)>,
+    /// The file, and the names it reads with `::` now
+    file: FileId,
+    scope_names: Vec<(String, u32)>,
 }
 
 impl Snapshot {
@@ -528,6 +544,16 @@ impl Snapshot {
         let defines = pp.finalize();
         let mut snapshot = Self::from_tree(ctx, tree);
         snapshot.defines = Some(defines);
+        snapshot.root = dme.parent().map(Path::to_owned);
+        if let Some(root) = &snapshot.root {
+            let mut scope_names = HashMap::new();
+            snapshot.ctx.files().for_each(|path| {
+                if let (Some(id), Ok(text)) = (snapshot.ctx.files().get_id(path), std::fs::read(root.join(path))) {
+                    scope_names.insert(id, names_after_scope(&String::from_utf8_lossy(&text)));
+                }
+            });
+            snapshot.scope_names = scope_names;
+        }
         if let Some((major, build)) = options.byond {
             snapshot.byond = ByondVersion::new(major, build);
         }
@@ -553,6 +579,7 @@ impl Snapshot {
             .get_id(file)
             .ok_or("it wasn't part of the code")?;
         let text = std::fs::read(root.join(file)).map_err(|e| e.to_string())?;
+        let scope_names = names_after_scope(&String::from_utf8_lossy(&text));
         if String::from_utf8_lossy(&text)
             .lines()
             .any(|line| line.trim_start().starts_with("#include"))
@@ -600,6 +627,18 @@ impl Snapshot {
         }
         if old.declarations != new.declarations {
             return Err("its proc declarations changed".to_owned());
+        }
+        // A default that moved is recorded where it was in the code that
+        // reads it with `::`, which the full read compiles again
+        let moved: Vec<(&String, u32)> = old
+            .var_lines
+            .iter()
+            .filter_map(|(k, line)| new.var_lines.get(k).filter(|n| *n != line).map(|_| (&k.1, *line)))
+            .collect();
+        if !moved.is_empty() {
+            if let Some(key) = self.reads_moved_default(id, &moved) {
+                return Err(format!("{key} reads a var default with :: that moved"));
+            }
         }
         let mut pairs = vec![];
         for (proc, old_values) in &old.procs {
@@ -688,12 +727,19 @@ impl Snapshot {
                 .into_iter()
                 .map(|(key, _, new_value)| (key, new_value))
                 .collect(),
+            file: id,
+            scope_names,
         })
     }
 
     /// Takes in a file's new code, once the running world has it
     pub fn keep(&mut self, reload: FileReload) {
+        let default_lines = self.default_lines.get_mut().unwrap();
+        for (key, _) in &reload.patched {
+            default_lines.remove(key);
+        }
         self.patched.extend(reload.patched);
+        self.scope_names.insert(reload.file, reload.scope_names);
     }
 
     /// Runs `f` on the snapshot as it was parsed, without the code files
@@ -770,6 +816,10 @@ impl Snapshot {
             defines: None,
             patched: HashMap::new(),
             byond: ByondVersion::LATEST,
+            root: None,
+            scope_names: HashMap::new(),
+            procs_by_file: std::sync::OnceLock::new(),
+            default_lines: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -1093,6 +1143,92 @@ impl Snapshot {
         }
     }
 
+    /// A proc whose code reads one of the `moved` defaults written in `file`
+    /// (name, old line) with `::`, as it was compiled
+    fn reads_moved_default(&self, file: FileId, moved: &[(&String, u32)]) -> Option<ProcKey> {
+        let file_name = self.file_name(file).into_bytes();
+        let procs_by_file = self.procs_by_file.get_or_init(|| {
+            let mut by_file: HashMap<FileId, Vec<ProcKey>> = HashMap::new();
+            for key in self.procs.keys() {
+                if let Some((_, value)) = self.find(key) {
+                    by_file.entry(value.location.file).or_default().push(key.clone());
+                }
+            }
+            by_file
+        });
+        // The procs with one of the names after `::` in their lines
+        let mut candidates = vec![];
+        for (id, uses) in &self.scope_names {
+            let lines: Vec<u32> = uses
+                .iter()
+                .filter(|(name, _)| moved.iter().any(|(m, _)| *m == name))
+                .map(|(_, line)| *line)
+                .collect();
+            if lines.is_empty() {
+                continue;
+            }
+            for key in procs_by_file.get(id).into_iter().flatten() {
+                let Some((_, value)) = self.find(key) else { continue };
+                if lines.iter().any(|l| proc_lines(value).contains(l)) {
+                    candidates.push(key.clone());
+                }
+            }
+        }
+        let mut default_lines = self.default_lines.lock().unwrap();
+        for key in candidates {
+            if !default_lines.contains_key(&key) {
+                let lines = self.recorded_defaults(&key);
+                default_lines.insert(key.clone(), lines);
+            }
+            if default_lines[&key]
+                .iter()
+                .any(|(f, line)| *f == file_name && moved.iter().any(|(_, old)| old == line))
+            {
+                return Some(key);
+            }
+        }
+        None
+    }
+
+    /// The lines (and files) of the defaults a proc's code records: those
+    /// outside its own lines
+    fn recorded_defaults(&self, key: &ProcKey) -> Vec<(Vec<u8>, u32)> {
+        let (Some((_, value)), Ok(code)) = (self.find(key), self.compile(key)) else {
+            return vec![];
+        };
+        let own_file = self.file_name(value.location.file).into_bytes();
+        let own = proc_lines(value);
+        let mut file = own_file.clone();
+        let mut lines = vec![];
+        for node in &code.nodes {
+            match node {
+                Node::Instruction(Instruction::DbgFile(name), _) => file = name.0.clone(),
+                Node::Instruction(Instruction::DbgLine(line), _) if !(file == own_file && own.contains(line)) => {
+                    lines.push((file.clone(), *line))
+                }
+                _ => {}
+            }
+        }
+        lines
+    }
+
+    /// Whether `value`'s source, from its header to the end of its body, has
+    /// `text` in it, as its file is now (`files` keeps the files read). True
+    /// when the file can't be read.
+    fn source_has(&self, value: &ProcValue, text: &str, files: &mut HashMap<FileId, Option<Vec<String>>>) -> bool {
+        let file = value.location.file;
+        let lines = files.entry(file).or_insert_with(|| {
+            let root = self.root.as_ref()?;
+            let source = std::fs::read(root.join(&*self.ctx.file_path(file))).ok()?;
+            Some(String::from_utf8_lossy(&source).lines().map(str::to_owned).collect())
+        });
+        let Some(lines) = lines else { return true };
+        let own = proc_lines(value);
+        let start = own.start().saturating_sub(1) as usize;
+        let end = (*own.end() as usize).min(lines.len());
+        lines.get(start..end).is_none_or(|l| l.iter().any(|l| l.contains(text)))
+    }
+
     fn file_name(&self, file: FileId) -> String {
         self.ctx
             .file_path(file)
@@ -1244,11 +1380,24 @@ pub fn diff(old: &Snapshot, new: &Snapshot, changed_files: Option<&HashSet<PathB
         }
 
         if in_changed_file(key) {
-            if let Some(lines) = line_move(old, new, &old_key, key, old_value, new_value) {
-                changes.line_moves.push(LineMove {
+            match line_move(old, new, &old_key, key, old_value, new_value) {
+                LineChange::Same => {}
+                LineChange::Moved(lines) => changes.line_moves.push(LineMove {
                     proc: old_key,
                     lines,
-                });
+                }),
+                // Lines can't be moved one for one: compiled again
+                LineChange::Recompile => match new.compile_code(key).and_then(|mut reload| {
+                    new.compile_in_lists(key, &mut reload, |_, _| false)?;
+                    Ok(reload)
+                }) {
+                    Ok(reload) => changes.reloads.push(ProcReload {
+                        settings: None,
+                        proc: old_key,
+                        ..reload
+                    }),
+                    Err(e) => changes.refused.push(format!("{key}: doesn't compile: {e}")),
+                },
             }
         }
     }
@@ -1281,7 +1430,11 @@ fn old_key(realigned: &Realigned, key: &ProcKey) -> Option<ProcKey> {
 /// vars whose declared types did, which their own code doesn't show: those
 /// that name one, and compile to something else now.
 fn const_users(old: &Snapshot, new: &Snapshot, realigned: &Realigned, changes: &mut Changes) {
-    if changes.consts.is_empty() && changes.retyped.is_empty() && changes.defaults_changed.is_empty() {
+    if changes.consts.is_empty()
+        && changes.retyped.is_empty()
+        && changes.defaults_changed.is_empty()
+        && changes.defaults_moved.is_empty()
+    {
         return;
     }
     // A name in the syntax tree shows in its debug text, as an identifier,
@@ -1293,8 +1446,11 @@ fn const_users(old: &Snapshot, new: &Snapshot, realigned: &Realigned, changes: &
         .chain(&changes.defaults_changed)
         .map(|c| format!("{c:?}"))
         .collect();
+    // (a moved default only shows in `/type::var`'s debug info)
+    let moved: Vec<String> = changes.defaults_moved.iter().map(|c| format!("StaticField({c:?})")).collect();
     // By their old keys
     let reloaded: HashSet<ProcKey> = changes.reloads.iter().map(|r| r.proc.clone()).collect();
+    let mut files = HashMap::new();
     for key in new.procs.keys() {
         let Some(old_key) = old_key(realigned, key) else {
             continue;
@@ -1305,8 +1461,15 @@ fn const_users(old: &Snapshot, new: &Snapshot, realigned: &Realigned, changes: &
         let (Some(_), Some((_, new_value))) = (old.find(&old_key), new.find(key)) else {
             continue;
         };
+        // (formatting every proc's code takes seconds in a big codebase: a
+        // moved default only matters to source that has `::`)
+        if names.is_empty() && !new.source_has(new_value, "::", &mut files) {
+            continue;
+        }
         let text = format!("{:?}{:?}", new_value.code, new_value.parameters);
-        if !names.iter().any(|name| text.contains(name.as_str())) {
+        if !names.iter().any(|name| text.contains(name.as_str()))
+            && !moved.iter().any(|name| text.contains(name.as_str()))
+        {
             continue;
         }
         let (Ok(before), Ok(after)) = (old.compile(&old_key), new.compile(key)) else {
@@ -1321,7 +1484,23 @@ fn const_users(old: &Snapshot, new: &Snapshot, realigned: &Realigned, changes: &
                 .collect()
         };
         if code(&before.nodes) == code(&after.nodes) {
-            continue;
+            // A default's line moved: the lines move with it, where they map
+            // one for one (this proc's own may have moved too)
+            match line_map(&before.nodes, &after.nodes) {
+                Some(lines) => {
+                    let lines: Vec<(u32, u32)> = lines.into_iter().collect();
+                    match changes.line_moves.iter_mut().find(|m| m.proc == old_key) {
+                        Some(found) => found.lines = lines,
+                        None if lines.iter().any(|(o, n)| o != n) => changes.line_moves.push(LineMove {
+                            proc: old_key,
+                            lines,
+                        }),
+                        None => {}
+                    }
+                    continue;
+                }
+                None => {}
+            }
         }
         let reload = new.compile_code(key).and_then(|mut reload| {
             new.compile_in_lists(key, &mut reload, |_, _| false)?;
@@ -1340,6 +1519,16 @@ fn const_users(old: &Snapshot, new: &Snapshot, realigned: &Realigned, changes: &
 }
 
 /// How the lines of an unchanged proc moved, if they did.
+/// What a proc whose code is the same needs where it moved
+enum LineChange {
+    Same,
+    /// Each line it records, old and new
+    Moved(Vec<(u32, u32)>),
+    /// Its lines don't map one for one (a line number it records in two files
+    /// that moves in one of them)
+    Recompile,
+}
+
 fn line_move(
     old: &Snapshot,
     new: &Snapshot,
@@ -1347,17 +1536,13 @@ fn line_move(
     key: &ProcKey,
     old_value: &ProcValue,
     new_value: &ProcValue,
-) -> Option<Vec<(u32, u32)>> {
+) -> LineChange {
     let mut lines = BTreeMap::new();
     match (old.compile(old_key), new.compile(key)) {
         (Ok(old_code), Ok(new_code)) => {
-            let old_lines = dbg_lines(&old_code.nodes);
-            let new_lines = dbg_lines(&new_code.nodes);
-            // The same code, so the same DbgLines in the same order
-            if old_lines.len() == new_lines.len() {
-                for (o, n) in old_lines.into_iter().zip(new_lines) {
-                    lines.insert(o, n);
-                }
+            match line_map(&old_code.nodes, &new_code.nodes) {
+                Some(map) => lines.extend(map),
+                None => return LineChange::Recompile,
             }
         }
         // Without the compiler, all we know is where the proc starts
@@ -1366,16 +1551,34 @@ fn line_move(
     if lines.is_empty() {
         // Every line from the header to the end of the body, by the header's
         // shift
-        let end = old_value.body_range.as_ref()?.end.line;
+        let Some(range) = old_value.body_range.as_ref() else {
+            return LineChange::Same;
+        };
         let (o, n) = (old_value.location.line, new_value.location.line);
-        for line in o..=end.max(o) {
+        for line in o..=range.end.line.max(o) {
             lines.insert(line, (line as i64 + n as i64 - o as i64) as u32);
         }
     }
     if lines.iter().all(|(o, n)| o == n) {
-        return None;
+        return LineChange::Same;
     }
-    Some(lines.into_iter().collect())
+    LineChange::Moved(lines.into_iter().collect())
+}
+
+/// Each line the old code records and the line the new code records in its
+/// place (the same code, so the same DbgLines in the same order), or `None`
+/// when they don't map one for one. Empty when the counts differ.
+fn line_map(old: &[Node], new: &[Node]) -> Option<BTreeMap<u32, u32>> {
+    let (old_lines, new_lines) = (dbg_lines(old), dbg_lines(new));
+    let mut lines = BTreeMap::new();
+    if old_lines.len() == new_lines.len() {
+        for (o, n) in old_lines.into_iter().zip(new_lines) {
+            if *lines.entry(o).or_insert(n) != n {
+                return None;
+            }
+        }
+    }
+    Some(lines)
 }
 
 fn dbg_lines(nodes: &[Node]) -> Vec<u32> {
@@ -1454,6 +1657,8 @@ struct FileContents<'a> {
             Option<dreammaker::ast::Expression>,
         ),
     >,
+    /// (type, name) -> the line of a default written in the file
+    var_lines: BTreeMap<(String, String), u32>,
     /// (type, name) -> kind, flags of the procs it declares
     declarations: BTreeMap<(String, String), String>,
     /// (type, name) -> its definitions, in order (with keys, in the snapshot)
@@ -1465,6 +1670,9 @@ impl<'a> FileContents<'a> {
         let path = &ty.get().path;
         for (name, var) in ty.get().vars.iter() {
             let declared = var.declaration.as_ref().filter(|d| d.location.file == file);
+            if var.value.location.file == file && var.value.expression.is_some() {
+                self.var_lines.insert((path.clone(), name.to_string()), var.value.location.line);
+            }
             if var.value.location.file == file || declared.is_some() {
                 self.vars.insert(
                     (path.clone(), name.to_string()),
@@ -2251,6 +2459,12 @@ fn compare_types(
                 Some(old_var) if old_var.value.expression != var.value.expression => {
                     var_default(old, new, path, name.as_str(), false, changes);
                 }
+                // The same default, written somewhere else (see `const_users`)
+                Some(old_var) if old_var.value.location != var.value.location => {
+                    if !changes.defaults_moved.iter().any(|c| c == name.as_str()) {
+                        changes.defaults_moved.push(name.to_string());
+                    }
+                }
                 Some(_) => {}
             }
         }
@@ -2766,4 +2980,31 @@ fn const_value(constant: &dreammaker::constants::Constant) -> Option<ConstValue>
         }
         _ => return None,
     })
+}
+
+/// The lines of a proc's definition, from its header to the end of its body
+/// (the last proc in a file has its end in the next one: to the file's end)
+fn proc_lines(value: &ProcValue) -> std::ops::RangeInclusive<u32> {
+    let start = value.location.line;
+    let end = match &value.body_range {
+        Some(r) if r.end.file == value.location.file && r.end.line >= start => r.end.line,
+        Some(_) => u32::MAX,
+        None => start,
+    };
+    start..=end
+}
+
+/// The names that follow `::` in DM source (`/type::name`, `x::name`), with
+/// their lines
+fn names_after_scope(text: &str) -> Vec<(String, u32)> {
+    let mut found = vec![];
+    for (i, line) in text.lines().enumerate() {
+        for after in line.split("::").skip(1) {
+            let end = after.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(after.len());
+            if end > 0 {
+                found.push((after[..end].to_owned(), i as u32 + 1));
+            }
+        }
+    }
+    found
 }
