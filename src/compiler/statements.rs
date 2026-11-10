@@ -291,6 +291,8 @@ fn emit_statement_inner(
                 else_block = Some(Default::default());
             }
             if live.is_empty() {
+                // (DreamMaker forgets the cache even where nothing is left)
+                compiler.cache = None;
                 if let Some(block) = &else_block {
                     emit_block(compiler, block)?;
                 }

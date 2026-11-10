@@ -740,3 +740,9 @@ fn or_assign_goes_by_the_source_of_a_folded_value() {
     let code = compile(&format!("{types}/proc/f(datum/t/o)\n\to.n &&= (0 && o.st)\n"), "", "f");
     assert!(!code.contains("PushCache"), "{code}");
 }
+
+#[test]
+fn a_dropped_if_forgets_the_cache() {
+    let src = "/datum/t\n\tvar/list/l = list(1)\n/proc/f(datum/t/o, a)\n\to.l.Remove(a)\n\tif (0)\n\t\ta = 2\n\treturn o.l.len\n";
+    assert_has(&compile(src, "", "f"), &["Pop", "GetVar cache = arg(0); cache = cache[\"l\"]; cache[\"len\"]"]);
+}
