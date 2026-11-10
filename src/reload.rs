@@ -2699,6 +2699,10 @@ fn var_default(
         changes.warnings.push(format!(
             "{shown}: {name} is a built-in var, so only new instances get its new default"
         ));
+        if name == "name" {
+            builtin_names(new, n, value, types, changes);
+            return;
+        }
         changes.builtin_defaults.push(VarDefault {
             var: name.to_owned(),
             value,
@@ -2711,6 +2715,38 @@ fn var_default(
         value,
         types,
     });
+}
+
+/// A new `name` default for `n` and the subtypes in `types`: without a name
+/// set by `n` or an ancestor, each type is named for its path; and the text of
+/// a type that doesn't set its own is the first letter of its name.
+fn builtin_names(new: &Snapshot, n: TypeRef, value: ConstValue, types: Vec<String>, changes: &mut Changes) {
+    let own_name = |path: &str| {
+        ConstValue::String(path.rsplit('/').next().unwrap_or_default().replace('_', " "))
+    };
+    let named = sets_builtin(n, "name");
+    let mut names = vec![];
+    for path in types {
+        let name = if named { value.clone() } else { own_name(&path) };
+        names.push((path, name));
+    }
+    for (path, name) in &names {
+        let push = |changes: &mut Changes, var: &str, value: ConstValue| {
+            match changes.builtin_defaults.iter_mut().find(|d| d.var == var && d.value == value) {
+                Some(d) => d.types.push(path.clone()),
+                None => changes.builtin_defaults.push(VarDefault {
+                    var: var.to_owned(),
+                    value,
+                    types: vec![path.clone()],
+                }),
+            }
+        };
+        push(changes, "name", name.clone());
+        let sets_text = new.find_type(path).is_some_and(|t| sets_builtin(t, "text"));
+        if let (ConstValue::String(name), false) = (name, sets_text) {
+            push(changes, "text", ConstValue::String(name.chars().take(1).collect()));
+        }
+    }
 }
 
 fn const_value(constant: &dreammaker::constants::Constant) -> Option<ConstValue> {

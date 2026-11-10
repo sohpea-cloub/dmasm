@@ -402,8 +402,10 @@ fn builtin_var_defaults() {
                 ConstValue::String("male".to_owned()),
                 all.clone()
             ),
-            ("name".to_owned(), ConstValue::String("b".to_owned()), all),
+            ("name".to_owned(), ConstValue::String("b".to_owned()), all.clone()),
             ("pixel_x".to_owned(), ConstValue::Number(5.0), both),
+            // (text is the first letter of the name, where it isn't set)
+            ("text".to_owned(), ConstValue::String("b".to_owned()), all),
         ]
     );
     assert!(changes.var_defaults.is_empty());
@@ -1350,4 +1352,30 @@ fn a_new_parent_type_is_refused_and_nothing_else() {
     assert!(!changes.refused.is_empty(), "{:?}", changes);
     // (parent_type is a built-in const, not a global to set)
     assert!(changes.redeclared.is_empty(), "{:?}", changes.redeclared);
+}
+
+#[test]
+fn a_removed_name_goes_back_to_each_types_own() {
+    let before = "/obj/thing\n\tname = \"box\"\n/obj/thing/big_one\n/obj/thing/small\n\ttext = \"s\"\n";
+    let after = "/obj/thing\n/obj/thing/big_one\n/obj/thing/small\n\ttext = \"s\"\n";
+    let changes = changes("removed-name", before, after);
+    assert!(changes.refused.is_empty(), "{:?}", changes.refused);
+    let mut set: Vec<(String, String, ConstValue)> = changes
+        .builtin_defaults
+        .iter()
+        .flat_map(|d| d.types.iter().map(move |t| (t.clone(), d.var.clone(), d.value.clone())))
+        .collect();
+    set.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    let s = |t: &str| ConstValue::String(t.to_owned());
+    assert_eq!(
+        set,
+        [
+            ("/obj/thing".to_owned(), "name".to_owned(), s("thing")),
+            ("/obj/thing".to_owned(), "text".to_owned(), s("t")),
+            ("/obj/thing/big_one".to_owned(), "name".to_owned(), s("big one")),
+            ("/obj/thing/big_one".to_owned(), "text".to_owned(), s("b")),
+            // (its own text stays)
+            ("/obj/thing/small".to_owned(), "name".to_owned(), s("small")),
+        ]
+    );
 }
