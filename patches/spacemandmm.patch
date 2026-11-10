@@ -1,7 +1,7 @@
 From 09ec406a8b670dc37a20dce21e431c6be802c621 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sun, 8 Nov 2026 12:46:29 +0000
-Subject: [PATCH 01/14] Keep the as clause of a for-in loop
+Subject: [PATCH 01/15] Keep the as clause of a for-in loop
 
 The as clause right after the loop variable is read early as a key type, for
 for (k as T, v in L), so for (var/x as anything in L) lost it.
@@ -30,7 +30,7 @@ index b1349b7..5ead4a9 100644
 From 5adf91dc3fb4afa4aba8bcd02fac4f52692a740b Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 13:52:06 +0000
-Subject: [PATCH 02/14] Parse empty arguments as null
+Subject: [PATCH 02/15] Parse empty arguments as null
 
 DreamMaker passes null for an argument left empty, as in f(a, , b). The
 parser now keeps those as null expressions (with an unknown location)
@@ -94,7 +94,7 @@ index 5ead4a9..18c636b 100644
 From 7fa9ffa21a253bc89f98dc62a796567ac6092bdc Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 13:52:07 +0000
-Subject: [PATCH 03/14] Add Term::Alist for alist() calls
+Subject: [PATCH 03/15] Add Term::Alist for alist() calls
 
 alist(...) parsed to Term::List, so tools couldn't tell an /alist from a
 /list. It gets its own term now; dreamchecker types it as /alist.
@@ -191,7 +191,7 @@ index 18c636b..8db01b7 100644
 From 322429012e5c5a796b1b24dae6a49ed9ddfd1447 Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 14:21:24 +0000
-Subject: [PATCH 04/14] Stringify macro arguments with their spacing
+Subject: [PATCH 04/15] Stringify macro arguments with their spacing
 
 #x now keeps the spaces the argument was written with, including trailing
 ones, the way DreamMaker does ("U(a || 1)", not "U ( a || 1 )").
@@ -317,7 +317,7 @@ index e573a4f..9c3de32 100644
 From f52611bb03f14e4fe183ccc0e4b4cd9f2106a5bb Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 14:23:18 +0000
-Subject: [PATCH 05/14] Guess the spacing of stringified tokens that came from
+Subject: [PATCH 05/15] Guess the spacing of stringified tokens that came from
  another macro
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -373,7 +373,7 @@ index 9c3de32..bec2d3b 100644
 From 5c46041957fb549415d68da86db6471850f30d30 Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 14:25:02 +0000
-Subject: [PATCH 06/14] Stringify spacing: binary minus
+Subject: [PATCH 06/15] Stringify spacing: binary minus
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -424,7 +424,7 @@ index bec2d3b..13c24a0 100644
 From ea6375b6c37a198e0f2dc949964a77113fd998bc Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 14:27:25 +0000
-Subject: [PATCH 07/14] Var flags anywhere in a var's path
+Subject: [PATCH 07/15] Var flags anywhere in a var's path
 
 DreamMaker reads var/list/static/x as a static list; only flags before the
 type were recognised.
@@ -466,7 +466,7 @@ index 7a6268c..702617a 100644
 From 557b2b724a6dfa97f7642e25840bfe65214dd137 Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 14:29:10 +0000
-Subject: [PATCH 08/14] EXCEPTION() passes __FILE__ and __LINE__, as in BYOND's
+Subject: [PATCH 08/15] EXCEPTION() passes __FILE__ and __LINE__, as in BYOND's
  stddef.dm
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -505,7 +505,7 @@ index 845438d..10541ca 100644
 From 72b5add0344bca3ce1378a3e7839b8b5325fab91 Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 14:30:47 +0000
-Subject: [PATCH 09/14] A macro call's expansion is placed at its closing
+Subject: [PATCH 09/15] A macro call's expansion is placed at its closing
  parenthesis
 
 DreamMaker's __LINE__ in a call spanning lines is the last line.
@@ -536,7 +536,7 @@ index 13c24a0..1668873 100644
 From 7ea6fdd56476024db8ae2b48e7532c4767ce399f Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 14:58:27 +0000
-Subject: [PATCH 10/14] Raw strings get the escapes a normal string's text has
+Subject: [PATCH 10/15] Raw strings get the escapes a normal string's text has
 
 Term::String holds a string as written, escapes and all. A raw string's
 text was stored as is, so a backslash in @"..." read as an escape.
@@ -583,7 +583,7 @@ index 8db01b7..99d80e1 100644
 From de20184cc1a10e282b54a9992a548b91fbef9bd8 Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 16:15:34 +0000
-Subject: [PATCH 11/14] Parameter: remember a leading slash (BYOND doesn't
+Subject: [PATCH 11/15] Parameter: remember a leading slash (BYOND doesn't
  declare such a parameter)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -653,7 +653,7 @@ index 99d80e1..4044d00 100644
 From 46e3bb708e7fb5c9ea97d134072c3069100e4444 Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 16:58:49 +0000
-Subject: [PATCH 12/14] Preprocessor: #pragma takes the rest of its line
+Subject: [PATCH 12/15] Preprocessor: #pragma takes the rest of its line
  (#pragma ignore unused_var left a stray token in the code)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -686,7 +686,7 @@ index 1668873..8ce0541 100644
 From 34f4d554fa1cc889529b3bea6d75261a9fee8ad6 Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 17:15:08 +0000
-Subject: [PATCH 13/14] Preprocessor: __LINE__ in a macro body counts the line
+Subject: [PATCH 13/15] Preprocessor: __LINE__ in a macro body counts the line
  breaks inside the arguments before it
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -745,7 +745,7 @@ index 8ce0541..6030434 100644
 From 1d47c18b035406f95f7f310a24013931d45a786c Mon Sep 17 00:00:00 2001
 From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
 Date: Sun, 8 Nov 2026 19:23:07 +0000
-Subject: [PATCH 14/14] Preprocessor: __FILE__ is relative to the .dme's
+Subject: [PATCH 14/15] Preprocessor: __FILE__ is relative to the .dme's
  directory, wherever the .dme is
 
 DreamMaker gives __FILE__ relative to the .dme. It came out absolute when
@@ -776,6 +776,42 @@ index 6030434..cb8c749 100644
                      let dm_path: String = cfg_select! {
                          windows => path.replace("\\", "/"),
                          _ => path.to_string()
+-- 
+2.47.3
+
+
+From 9d0e7d1761393e81edc9ee67d5b169a20c3354cc Mon Sep 17 00:00:00 2001
+From: "Sophie Wallace (Cloub)" <sophie@wiox.me>
+Date: Tue, 10 Nov 2026 01:04:40 +0000
+Subject: [PATCH 15/15] Parser: a switch with nothing under it has no cases
+
+DreamMaker takes `switch(x)` with no cases under it; the parser
+wanted a block and dropped the proc's code.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ crates/dreammaker/src/parser.rs | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/crates/dreammaker/src/parser.rs b/crates/dreammaker/src/parser.rs
+index 4044d00..aac0183 100644
+--- a/crates/dreammaker/src/parser.rs
++++ b/crates/dreammaker/src/parser.rs
+@@ -1803,6 +1803,14 @@ impl<'ctx, 'an, 'inp> Parser<'ctx, 'an, 'inp> {
+             require!(self.exact(Token!['(']));
+             let expr = require!(self.expression());
+             require!(self.exact(Token![')']));
++            // nothing under it: a switch with no cases, which DreamMaker takes
++            if let Some(()) = self.statement_terminator()? {
++                return spanned(Statement::Switch {
++                    input: Box::new(expr),
++                    cases: Default::default(),
++                    default: None,
++                });
++            }
+             require!(self.exact(Token!['{']));
+             let mut cases = Vec::new();
+             let default = loop {
 -- 
 2.47.3
 

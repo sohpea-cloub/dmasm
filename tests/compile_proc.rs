@@ -466,3 +466,10 @@ fn proc_argument_keys_worked_out() {
         &["SetVarExpr cache[\"b\"]", "LAB_0004:", "CallGlob 1 /proc/g"],
     );
 }
+
+#[test]
+fn switch_with_no_cases() {
+    let code = compile("/proc/f(a)\n\tswitch(a)\n\treturn 1\n", "", "f");
+    assert_has(&code, &["GetVar arg(0)", "Switch default => LAB_0001,", "LAB_0001:", "PushInt 1", "Ret"]);
+}
+
