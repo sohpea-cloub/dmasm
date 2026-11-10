@@ -13,6 +13,9 @@ nom = "7"
 bitflags = "2"
 serde = { version = "1", features = ["derive"], optional = true }
 dreammaker = { git = "https://github.com/SpaceManiac/SpacemanDMM", tag = "suite-1.12" }
+# md5() and sha1() of constant text fold, as in DreamMaker
+md-5 = "0.10.6"
+sha1 = "0.10.7"
 
 # Until its parser fixes (Term::Alist, empty arguments, `as` in for-in) are upstream
 [patch."https://github.com/SpaceManiac/SpacemanDMM"]

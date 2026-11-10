@@ -274,6 +274,13 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
                 _ => return None,
             }
         }
+        // md5() and sha1() of text (not of a number, null or a path)
+        Term::Call(name, args) if args.len() == 1 && matches!(name.as_str(), "md5" | "sha1") => {
+            let Constant::Text(text) = value(c, &args[0])? else {
+                return None;
+            };
+            Constant::Text(hash(name.as_str(), &text).into_bytes())
+        }
         // arctan(x, y): the angle of (x, y), not of (0, 0)
         Term::Call(name, args) if name.as_str() == "arctan" && args.len() == 2 => {
             let (Constant::Number(x), Constant::Number(y)) =
@@ -376,6 +383,17 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
         Term::Ident(name) => from_objtree(&super::procs::const_value(c, name.as_str())?)?,
         _ => return None,
     })
+}
+
+/// The hex digest of `text` by `md5` or `sha1`.
+fn hash(name: &str, text: &[u8]) -> String {
+    use sha1::Digest;
+    let digest: Vec<u8> = if name == "md5" {
+        md5::Md5::digest(text).to_vec()
+    } else {
+        sha1::Sha1::digest(text).to_vec()
+    };
+    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn binary_value(c: &Compiler, expr: &Expression) -> Option<Constant> {

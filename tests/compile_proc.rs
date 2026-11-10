@@ -636,3 +636,17 @@ fn hex_escapes_are_characters() {
     let code = compile("/proc/f()\n\treturn \"\\xe9t\\x41\"\n", "", "f");
     assert_has(&code, &["PushVal \"étA\"", "Ret"]);
 }
+
+#[test]
+fn hashes_of_text_fold() {
+    let code = compile("/proc/f()\n\treturn md5(\"x\")\n", "", "f");
+    assert_has(&code, &["PushVal \"9dd4e461268c8034f5c8564e155c67a6\"", "Ret"]);
+    let code = compile("/proc/f()\n\treturn sha1(\"k\" + \"UPPER lower\")\n", "", "f");
+    assert_has(&code, &["PushVal \"7806b65f635265368f10c2abc91db9eae1753a54\"", "Ret"]);
+    // the text as UTF-8
+    let code = compile("/proc/f()\n\treturn md5(\"\\xff\")\n", "", "f");
+    assert_has(&code, &["PushVal \"f3f7437e8c1f303fc6742d9368b36cf6\"", "Ret"]);
+    // not of a number
+    let code = compile("/proc/f()\n\treturn md5(1)\n", "", "f");
+    assert_has(&code, &["PushInt 1", "Md5"]);
+}
