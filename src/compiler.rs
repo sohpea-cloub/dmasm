@@ -214,12 +214,28 @@ pub fn compile_expr_for(
 
     let mut lexer =
         dreammaker::lexer::Lexer::new(&ctx, dreammaker::FileId::BUILTINS, code.as_bytes());
-    let mut indents = dreammaker::IndentProcessor::new(&ctx, &mut lexer);
-    let expr = ctx.parse_expression(dreammaker::Location::BUILTINS, &mut indents)?;
+    let tokens: Vec<dreammaker::lexer::LocatedToken> =
+        dreammaker::IndentProcessor::new(&ctx, &mut lexer).collect();
+    let taken = std::cell::Cell::new(0usize);
+    let expr = ctx.parse_expression(
+        dreammaker::Location::BUILTINS,
+        tokens.iter().cloned().inspect(|_| taken.set(taken.get() + 1)),
+    )?;
 
-    if !lexer.remaining().is_empty() {
+    // The parser stops at the first token that isn't the expression's, which
+    // is the last one it took: that and the rest have to be the end
+    let rest = &tokens[taken.get().saturating_sub(1).min(tokens.len())..];
+    let ends = |token: &dreammaker::lexer::LocatedToken| {
+        use dreammaker::lexer::{Punctuation, Token};
+        matches!(
+            token.token,
+            Token::Eof | Token::Punct(Punctuation::Newline | Punctuation::Semicolon)
+        )
+    };
+    if taken.get() > 0 && !rest.iter().all(ends) {
         return Err(CompileError::ExpectedEnd);
     }
+
 
     for err in ctx.errors().iter() {
         if err.severity() >= Severity::Error {
