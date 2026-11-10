@@ -997,6 +997,7 @@ impl Snapshot {
             debug_info,
             index: None,
             byond: self.byond,
+            file_names: Some(&|id| self.file_name(id)),
         };
         let path = format!("{}/{}", ty.get().path, name);
         let compiled = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1052,6 +1053,7 @@ impl Snapshot {
             debug_info: true,
             index: Some(*index),
             byond: self.byond,
+            file_names: Some(&|id| self.file_name(id)),
         };
         // The compiler is new, and one proc it can't handle shouldn't take the
         // whole watcher down

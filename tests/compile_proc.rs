@@ -33,6 +33,7 @@ fn compile(code: &str, ty: &str, name: &str) -> String {
         debug_info: false,
         index: None,
         byond: dmasm::ByondVersion::LATEST,
+        file_names: None,
     };
     let compiled = compile_proc(&source).expect("compiles");
     dmasm::format(&compiled.nodes)
@@ -217,6 +218,7 @@ fn same_named_static_locals_in_one_proc_are_different_globals() {
         debug_info: false,
         index: None,
         byond: dmasm::ByondVersion::LATEST,
+        file_names: None,
     };
     let compiled = compile_proc(&source).unwrap();
     let scopes: Vec<Option<String>> = compiled
@@ -773,5 +775,34 @@ fn initial_of_a_static_or_const_is_its_globals() {
     assert_has(
         &code,
         &["GetVar arg(0)", "SetVar cache", "PushCache", "GetVar cache[\"o\"]", "SetVar cache", "PopCache", "GetVar initial(cache[\"n\"])"],
+    );
+}
+
+#[test]
+fn a_type_scope_default_records_where_it_is_written() {
+    // (same file: its line, and the statement's line still counts)
+    let src = "/datum/u\n\tvar/x = 3\n/proc/f(a)\n\ta = /datum/u::x\n\treturn a\n";
+    let ctx = dreammaker::Context::default();
+    let pp = dreammaker::Preprocessor::from_buffer(&ctx, "test.dm".into(), src.to_owned());
+    let mut parser = dreammaker::Parser::new(&ctx, pp);
+    parser.enable_procs();
+    let tree = parser.parse_object_tree();
+    let value = tree.root().get().procs.get("f").unwrap().value.last().unwrap();
+    let source = ProcSource {
+        tree: &tree,
+        ty: tree.root(),
+        name: "f",
+        value,
+        file: "test.dm",
+        debug_info: true,
+        index: None,
+        byond: dmasm::ByondVersion::LATEST,
+        file_names: Some(&|_| "other.dm".to_owned()),
+    };
+    let code = dmasm::format(&compile_proc(&source).unwrap().nodes);
+    let code: Vec<&str> = code.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    assert_eq!(
+        code,
+        ["DbgFile \"test.dm\"", "DbgLine 4", "DbgLine 2", "PushInt 3", "SetVar arg(0)", "DbgLine 5", "GetVar arg(0)", "Ret", "End"]
     );
 }

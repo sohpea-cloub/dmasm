@@ -319,6 +319,9 @@ struct Compiler<'a> {
     /// these even when the code doesn't use it (but not for `global.x`, or a
     /// static or const var read as `a.s`)
     global_field: bool,
+    /// Set while the debug info names another file (a var default's): the
+    /// next line recorded names the proc's own again first
+    other_file: bool,
     /// Set while compiling an expression with nothing folded (to see what
     /// DreamMaker sees in its source)
     no_fold: bool,
@@ -349,6 +352,7 @@ impl<'a> Compiler<'a> {
             regroup_root: false,
             regroup_chain: false,
             global_field: false,
+            other_file: false,
             no_fold: false,
             list_elem_type: None,
         }
@@ -357,6 +361,12 @@ impl<'a> Compiler<'a> {
     fn emit_ins(&mut self, mut ins: Instruction) {
         if !self.debug_info && matches!(ins, Instruction::DbgLine(_) | Instruction::DbgFile(_)) {
             return;
+        }
+        if let (Instruction::DbgLine(_), true) = (&ins, self.other_file) {
+            self.other_file = false;
+            self.last_line = None;
+            let file = self.proc.as_ref().map(|p| p.file.clone()).unwrap_or_default();
+            self.emit_ins(Instruction::DbgFile(DMString(file.into_bytes())));
         }
         if let Instruction::DbgLine(line) = ins {
             // DreamMaker doesn't repeat the line it last recorded
@@ -594,8 +604,12 @@ impl<'a> Compiler<'a> {
             }
             // A term on a later line than the last recorded one gets its own
             // line record, as in a list() written over several lines
-            if let Expression::Base { term, .. } = &expr {
-                if self.last_line.is_some_and(|l| term.location.line > l) {
+            // (and after a default from another file, a call or a list
+            // element names the proc's file and line again)
+            if let Expression::Base { term, follow } = &expr {
+                let runs_code = matches!(term.elem, dreammaker::ast::Term::Call(..))
+                    || follow.iter().any(|f| matches!(f.elem, Follow::Call(..) | Follow::Index(..)));
+                if self.last_line.is_some_and(|l| term.location.line > l) || (self.other_file && runs_code) {
                     self.emit_ins(Instruction::DbgLine(term.location.line));
                 }
             }

@@ -27,6 +27,7 @@ fn compile_for(byond: ByondVersion, code: &str) -> Result<String, String> {
         debug_info: false,
         index: None,
         byond,
+        file_names: None,
     };
     let compiled = compile_proc(&source).map_err(|e| e.to_string())?;
     Ok(dmasm::format(&compiled.nodes)

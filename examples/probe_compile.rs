@@ -18,7 +18,7 @@ fn main() {
     };
     let ty = if a[2].is_empty() { tree.root() } else { tree.find(&a[2]).expect("type") };
     let value = ty.get().procs.get(a[3].as_str()).expect("proc").value.last().unwrap();
-    let source = ProcSource { tree: &tree, ty, name: &a[3], value, file: "test.dm", debug_info: false, index: None, byond };
+    let source = ProcSource { tree: &tree, ty, name: &a[3], value, file: "test.dm", debug_info: false, index: None, byond, file_names: None };
     let compiled = compile_proc(&source).expect("compiles");
     print!("{}", dmasm::format(&compiled.nodes));
 }
