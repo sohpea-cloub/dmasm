@@ -21,6 +21,44 @@ pub use operands::{
 };
 use std::fmt::Write;
 
+/// A BYOND build. The code the compiler writes is what that build's
+/// DreamMaker writes: an older one doesn't have some instructions, and folds
+/// and orders some things differently. Build numbers go on rising across
+/// major versions (515.1647 came before 516.1648), so comparing builds is
+/// enough.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ByondVersion {
+    pub major: u32,
+    pub build: u32,
+}
+
+impl ByondVersion {
+    /// The newest build the compiler was checked against.
+    pub const LATEST: ByondVersion = ByondVersion::new(516, 1688);
+
+    pub const fn new(major: u32, build: u32) -> Self {
+        ByondVersion { major, build }
+    }
+
+    /// Whether this is `build` or a later one.
+    pub const fn at_least(self, build: u32) -> bool {
+        self.build >= build
+    }
+}
+
+impl Default for ByondVersion {
+    fn default() -> Self {
+        Self::LATEST
+    }
+}
+
+impl std::fmt::Display for ByondVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}", self.major, self.build)
+    }
+}
+
 #[derive(PartialEq, Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Node<D = ()> {

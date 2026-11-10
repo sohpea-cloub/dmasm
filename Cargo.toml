@@ -14,3 +14,6 @@ bitflags = "2"
 serde = { version = "1", features = ["derive"], optional = true }
 # SpacemanDMM with parser fixes that aren't upstream yet
 dreammaker = { git = "https://github.com/sohpea-cloub/SpacemanDMM", branch = "revamp" }
+# md5() and sha1() of constant text fold, as in DreamMaker
+md-5 = "0.10.6"
+sha1 = "0.10.7"
