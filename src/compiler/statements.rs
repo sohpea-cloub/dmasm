@@ -436,7 +436,7 @@ fn emit_statement_inner(
             } else {
                 let name_expr = Expression::from(Term::Ident(for_list.name.clone()));
                 let ty = super::procs::declared_type_path(compiler, &name_expr).unwrap_or_default();
-                (compiler.emit_find_var(for_list.name.clone()), ty)
+                (compiler.emit_find_var(for_list.name.clone())?, ty)
             };
             let var = lvalue_var(compiler, var)?;
             // DreamMaker reads the list afresh, not from what the cache held
@@ -532,7 +532,7 @@ fn emit_statement_inner(
                 compiler.emit_ins(Instruction::SetVar(Variable::Local(slot)));
                 EvalKind::Var(Variable::Local(slot))
             } else {
-                compiler.emit_find_var(for_range.name.clone())
+                compiler.emit_find_var(for_range.name.clone())?
             };
             let var = lvalue_var(compiler, var)?;
             emit_value(compiler, &for_range.start)?;
@@ -820,9 +820,9 @@ fn emit_statement_inner(
                 compiler.emit_ins(Instruction::SetVar(Variable::Local(v)));
                 (Variable::Local(k), Variable::Local(v))
             } else {
-                let k = compiler.emit_find_var(kv.key.clone());
+                let k = compiler.emit_find_var(kv.key.clone())?;
                 let k = lvalue_var(compiler, k)?;
-                let v = compiler.emit_find_var(kv.value.clone());
+                let v = compiler.emit_find_var(kv.value.clone())?;
                 let v = lvalue_var(compiler, v)?;
                 (k, v)
             };

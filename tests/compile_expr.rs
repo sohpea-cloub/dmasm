@@ -25,8 +25,6 @@ fn calls_on_a_value_go_by_name_to_find_verbs_too() {
     assert!(code.contains(&Instruction::CallNameArgList), "{:?}", code);
 }
 
-use dmasm::compiler::CompileError;
-
 #[test]
 fn what_follows_an_expression_is_an_error() {
     for code in ["x x", "x 1", "1 x", "x) + (x", "x + 1 2", "f(x) y", "x[1] x", "\"a\" \"b\"", "x, x", "x x x x"] {
@@ -48,4 +46,115 @@ fn an_expression_ends_where_it_ends() {
             _ => {}
         }
     }
+}
+
+// With a scope: what a debugger knows of the frame the expression is for
+
+use dmasm::compiler::{compile_expr_in, CompileError, ExprScope};
+use dmasm::ByondVersion;
+
+/// Compiles for an object with vars `hp` and `name` and a proc `bump`, in a
+/// world with globals `ticks` and `name`, whose globals list is the param
+/// `globals`
+fn scoped(code: &str, params: &[&str]) -> Result<Vec<Instruction>, CompileError> {
+    let scope = ExprScope {
+        has_src_var: &|name| matches!(name, "hp" | "name"),
+        has_src_proc: &|name| name == "bump",
+        has_global: &|name| matches!(name, "ticks" | "name"),
+        globals: "globals",
+    };
+    let mut params = params.to_vec();
+    params.push("globals");
+    Ok(compile_expr_in(code, &params, Some(&scope), ByondVersion::LATEST)?
+        .into_iter()
+        .filter_map(|node| match node {
+            Node::Instruction(ins, _) => Some(ins),
+            _ => None,
+        })
+        .collect())
+}
+
+/// The same code as `scoped` gives, written out in full
+fn written_out(code: &str, params: &[&str]) -> Vec<Instruction> {
+    let mut params = params.to_vec();
+    params.push("globals");
+    instructions(code, &params)
+}
+
+#[test]
+fn a_bare_name_is_a_var_of_src() {
+    assert_eq!(scoped("hp", &[]).unwrap(), written_out("src.hp", &[]));
+    assert_eq!(scoped("hp + 1", &[]).unwrap(), written_out("src.hp + 1", &[]));
+    assert_eq!(scoped("hp.len", &[]).unwrap(), written_out("src.hp.len", &[]));
+    assert_eq!(scoped("hp[2]", &[]).unwrap(), written_out("src.hp[2]", &[]));
+    assert_eq!(scoped("x.hp + hp", &["x"]).unwrap(), written_out("x.hp + src.hp", &["x"]));
+}
+
+#[test]
+fn a_bare_name_is_assigned_as_a_var_of_src() {
+    assert_eq!(scoped("hp = 5", &[]).unwrap(), written_out("src.hp = 5", &[]));
+    assert_eq!(scoped("hp += x", &["x"]).unwrap(), written_out("src.hp += x", &["x"]));
+    assert_eq!(scoped("hp++", &[]).unwrap(), written_out("src.hp++", &[]));
+}
+
+#[test]
+fn a_param_comes_before_a_var_of_src() {
+    assert_eq!(scoped("hp", &["hp"]).unwrap(), written_out("hp", &["hp"]));
+    assert_eq!(scoped("src.hp", &["hp"]).unwrap(), written_out("src.hp", &["hp"]));
+}
+
+#[test]
+fn a_var_of_src_comes_before_a_global() {
+    // Both are called `name`
+    assert_eq!(scoped("name", &[]).unwrap(), written_out("src.name", &[]));
+}
+
+#[test]
+fn a_global_is_read_and_written_through_the_globals_list() {
+    assert_eq!(scoped("ticks", &[]).unwrap(), written_out("globals[\"ticks\"]", &[]));
+    assert_eq!(scoped("ticks + hp", &[]).unwrap(), written_out("globals[\"ticks\"] + src.hp", &[]));
+    assert_eq!(scoped("ticks = 3", &[]).unwrap(), written_out("globals[\"ticks\"] = 3", &[]));
+    assert_eq!(scoped("ticks.len", &[]).unwrap(), written_out("globals[\"ticks\"].len", &[]));
+}
+
+#[test]
+fn a_name_nothing_has_is_an_error() {
+    let error = scoped("nowhere + 1", &[]).unwrap_err();
+    assert!(matches!(&error, CompileError::UndefinedVar(name) if name == "nowhere"), "{:?}", error);
+    assert_eq!(error.to_string(), "undefined var: nowhere");
+    // Not so for what's reached through something else
+    assert!(scoped("hp.nowhere", &[]).is_ok());
+}
+
+#[test]
+fn a_bare_call_is_src_s_proc_if_it_has_one() {
+    assert_eq!(scoped("bump(1, hp)", &[]).unwrap(), written_out("src.bump(1, src.hp)", &[]));
+    assert_eq!(scoped("other(1)", &[]).unwrap(), written_out("other(1)", &[]));
+    // BYOND's own procs are themselves
+    assert_eq!(scoped("length(hp)", &[]).unwrap(), written_out("length(src.hp)", &[]));
+}
+
+#[test]
+fn what_the_frame_has_keeps_its_meaning() {
+    for name in ["src", "usr", ".", "world"] {
+        assert_eq!(scoped(name, &[]).unwrap(), written_out(name, &[]), "{}", name);
+    }
+}
+
+#[test]
+fn global_dot_is_a_global_whatever_src_has() {
+    assert_eq!(scoped("global.ticks", &[]).unwrap(), written_out("globals[\"ticks\"]", &[]));
+    assert_eq!(scoped("global.name", &[]).unwrap(), written_out("globals[\"name\"]", &[]));
+    assert_eq!(scoped("global.ticks.len", &[]).unwrap(), written_out("globals[\"ticks\"].len", &[]));
+    assert_eq!(scoped("global.ticks = hp", &[]).unwrap(), written_out("globals[\"ticks\"] = src.hp", &[]));
+}
+
+#[test]
+fn without_a_scope_a_bare_name_is_a_global() {
+    let code = instructions("ticks", &[]);
+    assert!(
+        matches!(&code[1], Instruction::GetVar(dmasm::Variable::Global(global)) if global.name.0 == b"ticks"),
+        "{:?}",
+        code
+    );
 }

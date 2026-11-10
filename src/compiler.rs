@@ -88,6 +88,8 @@ pub enum CompileError {
         name: String,
     },
     UnsupportedStatement(&'static str),
+    /// A name in a debugger's expression that nothing it can see has.
+    UndefinedVar(String),
     /// Another error, at a source line.
     AtLine(u32, Box<CompileError>),
 
@@ -134,6 +136,7 @@ impl fmt::Display for CompileError {
                 write!(f, "string error: {}", err)
             }
 
+            CompileError::UndefinedVar(name) => write!(f, "undefined var: {}", name),
             CompileError::ExpectedLValue => write!(f, "expected l-value"),
             CompileError::ExpectedFieldReference => write!(f, "expected field reference"),
             CompileError::ExpectedEnd => {
@@ -191,6 +194,27 @@ impl fmt::Display for CompileError {
     }
 }
 
+/// What an expression can name besides its params: the object it's
+/// evaluated for and the world's globals, which only whoever runs it knows.
+///
+/// With one, a bare name is a param, then a var of the object (`src.name`),
+/// then a global var, as in a proc's code, and anything else is an error; a
+/// bare call is the object's proc if it has one of that name, else a global
+/// proc. Without one, a name that isn't a param is taken for a global var,
+/// and a bare call for a global proc.
+pub struct ExprScope<'a> {
+    /// Whether the object (`src`) has a var of this name
+    pub has_src_var: &'a dyn Fn(&str) -> bool,
+    /// Whether the object has a proc or verb of this name
+    pub has_src_proc: &'a dyn Fn(&str) -> bool,
+    /// Whether the world has a global var of this name
+    pub has_global: &'a dyn Fn(&str) -> bool,
+    /// The param that holds the world's list of global vars (`global.vars`),
+    /// which globals are read and written through by name: a var's id isn't
+    /// enough to tell a global from a type's var of the same name.
+    pub globals: &'a str,
+}
+
 /// Compiles an expression for the debugger's evals, for the newest build
 /// (see `compile_expr_for`).
 pub fn compile_expr(code: &str, params: &[&str]) -> Result<Vec<Node>, CompileError> {
@@ -204,8 +228,20 @@ pub fn compile_expr_for(
     params: &[&str],
     byond: ByondVersion,
 ) -> Result<Vec<Node>, CompileError> {
+    compile_expr_in(code, params, None, byond)
+}
+
+/// Compiles an expression for the debugger's evals in a world running
+/// `byond`, where names mean what `scope` says (see `ExprScope`).
+pub fn compile_expr_in(
+    code: &str,
+    params: &[&str],
+    scope: Option<&ExprScope>,
+    byond: ByondVersion,
+) -> Result<Vec<Node>, CompileError> {
     let mut compiler = Compiler::new(params.iter().map(|x| x.to_string()).collect(), None);
     compiler.byond = byond;
+    compiler.expr_scope = scope;
     compiler.emit_ins(Instruction::DbgFile(DMString(
         b"<dmasm expression>".to_vec(),
     )));
@@ -256,6 +292,18 @@ pub fn compile_expr_for(
     Ok(compiler.nodes)
 }
 
+/// `src.member`, for a name a debugger's expression leaves `src.` off
+fn src_member(member: Follow) -> Expression {
+    let location = dreammaker::Location::BUILTINS;
+    Expression::Base {
+        term: Box::new(dreammaker::ast::Spanned::new(
+            location,
+            dreammaker::ast::Term::Ident("src".into()),
+        )),
+        follow: vec![dreammaker::ast::Spanned::new(location, member)].into(),
+    }
+}
+
 #[derive(Debug, PartialEq)]
 enum EvalKind {
     // The result of the expression will be on the top of the stack
@@ -303,6 +351,9 @@ struct Compiler<'a> {
     short_circuit_labels: Vec<(String, bool)>,
     /// Set when compiling a whole proc: what it can see.
     proc: Option<procs::ProcCtx<'a>>,
+    /// Set when compiling a debugger's expression that knows its
+    /// surroundings: what its names mean.
+    expr_scope: Option<&'a ExprScope<'a>>,
     /// What the cache register holds, as the chain of bases that were loaded
     /// into it, or `None` when unknown. DreamMaker leaves out a `cache = x`
     /// when the cache already holds `x`.
@@ -368,6 +419,7 @@ impl<'a> Compiler<'a> {
             label_count: 0,
             short_circuit_labels: vec![],
             proc,
+            expr_scope: None,
             cache: None,
             last_line: None,
             implicit_type: None,
@@ -511,16 +563,16 @@ impl<'a> Compiler<'a> {
         label
     }
 
-    fn emit_find_var(&mut self, ident: dreammaker::ast::Ident) -> EvalKind {
+    fn emit_find_var(&mut self, ident: dreammaker::ast::Ident) -> Result<EvalKind, CompileError> {
         if let Some(kind) = procs::find_var(self, ident.as_str()) {
-            return kind;
+            return Ok(kind);
         }
 
         if let Some(index) = self.params.iter().rposition(|x| *x == ident.as_str()) {
-            return EvalKind::Var(Variable::Arg(index as u32));
+            return Ok(EvalKind::Var(Variable::Arg(index as u32)));
         }
 
-        match ident.as_str() {
+        Ok(match ident.as_str() {
             "." => EvalKind::Var(Variable::Dot),
             "usr" => EvalKind::Var(Variable::Usr),
             "src" => EvalKind::Var(Variable::Src),
@@ -530,12 +582,43 @@ impl<'a> Compiler<'a> {
             "callee" => EvalKind::Var(Variable::Callee),
             "global" => EvalKind::Global,
 
-            // Anything else is treated as a global var
-            _ => EvalKind::Var(Variable::Global(GlobalVar::named(
-                ident.as_str().as_bytes(),
-                None,
-            ))),
-        }
+            name => match self.expr_scope {
+                // A debugger's expression: a var of the object it's
+                // evaluated for, then a global, as in a proc's code
+                Some(scope) => {
+                    if (scope.has_src_var)(name) {
+                        return self.emit_expr(src_member(Follow::Field(
+                            dreammaker::ast::PropertyAccessKind::Dot,
+                            ident.clone(),
+                        )));
+                    }
+                    if (scope.has_global)(name) {
+                        return self.emit_global_by_name(name);
+                    }
+                    return Err(CompileError::UndefinedVar(name.to_owned()));
+                }
+
+                // Anything else is treated as a global var
+                None => EvalKind::Var(Variable::Global(GlobalVar::named(
+                    name.as_bytes(),
+                    None,
+                ))),
+            },
+        })
+    }
+
+    /// A global var read through the list of them that a debugger's
+    /// expression is given (see `ExprScope::globals`): `globals["name"]`
+    fn emit_global_by_name(&mut self, name: &str) -> Result<EvalKind, CompileError> {
+        let scope = self.expr_scope.expect("a global by name outside a debugger's expression");
+        let Some(index) = self.params.iter().rposition(|x| *x == scope.globals) else {
+            return Err(CompileError::UndefinedVar(scope.globals.to_owned()));
+        };
+        self.emit_ins(Instruction::GetVar(Variable::Arg(index as u32)));
+        self.emit_ins(Instruction::PushVal(operands::Value::DMString(DMString(
+            name.as_bytes().to_vec(),
+        ))));
+        Ok(EvalKind::ListRef)
     }
 
     fn emit_move_to_stack(&mut self, kind: EvalKind) -> Result<EvalKind, CompileError> {

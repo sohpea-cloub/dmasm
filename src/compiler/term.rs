@@ -58,7 +58,7 @@ pub(super) fn emit(compiler: &mut Compiler<'_>, term: Term) -> Result<EvalKind, 
                 compiler.emit_constant(value)?;
                 return Ok(EvalKind::Stack);
             }
-            Ok(compiler.emit_find_var(ident))
+            compiler.emit_find_var(ident)
         }
         Term::GlobalIdent(ident) => {
             Ok(EvalKind::Var(Variable::Global(GlobalVar::named(
@@ -114,6 +114,15 @@ pub(super) fn emit(compiler: &mut Compiler<'_>, term: Term) -> Result<EvalKind, 
                         super::procs::emit_bare_call(compiler, &ident, args_vec.clone())?
                     {
                         return Ok(kind);
+                    }
+                    // A debugger's expression, for an object with a proc of
+                    // that name: the object's, as in its procs' code
+                    if compiler.expr_scope.is_some_and(|scope| (scope.has_src_proc)(ident.as_str())) {
+                        return compiler.emit_expr(super::src_member(Follow::Call(
+                            dreammaker::ast::PropertyAccessKind::Dot,
+                            ident.clone(),
+                            args_vec.into(),
+                        )));
                     }
                     let arg_count = args_vec.len() as u32;
 
@@ -253,7 +262,7 @@ pub(super) fn emit(compiler: &mut Compiler<'_>, term: Term) -> Result<EvalKind, 
             if expr.ident.as_str() == "src" && !expr.fields.is_empty() && compiler.proc.is_some() {
                 compiler.explicit_src = true;
             }
-            let var = compiler.emit_find_var(expr.ident.into());
+            let var = compiler.emit_find_var(expr.ident.into())?;
             let follows: Vec<Follow> = expr
                 .fields
                 .iter()

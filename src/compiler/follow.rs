@@ -482,7 +482,12 @@ fn commit_field_buffer(
         // Bit hacky.
         EvalKind::Global => {
             let name = field_chain.remove(0);
-            // global.x
+            // global.x. A debugger's expression reads it by name (see
+            // `ExprScope::globals`).
+            if compiler.expr_scope.is_some() {
+                let kind = compiler.emit_global_by_name(&name)?;
+                return commit_field_buffer(compiler, kind, field_chain);
+            }
             let var = Variable::Global(GlobalVar::named(name.as_bytes(), Some(String::new())));
             return commit_field_buffer(compiler, EvalKind::Var(var), field_chain);
         }
