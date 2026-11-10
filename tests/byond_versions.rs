@@ -150,3 +150,16 @@ fn safe_element_changes_restore_the_cache_first_from_516_1685() {
         assert!(old.contains("PushCache\nGetVar cache[\"l\"]\nPushInt 1\nPopCache\nSetVar cache_key"), "{old}");
     }
 }
+
+#[test]
+fn bit_not_folds() {
+    let byond = ByondVersion::LATEST;
+    // prefix operators apply innermost first
+    assert_eq!(ret(byond, "~-1"), "PushVal 16777215");
+    assert_eq!(ret(byond, "-~1"), "PushVal -16777214");
+    assert_eq!(ret(byond, "~-3.25"), "PushVal 16777215");
+    // text and null are 0
+    assert_eq!(ret(byond, "~\"x\""), "PushVal 16777215");
+    assert_eq!(ret(byond, "~null"), "PushVal 16777215");
+    assert_eq!(ret(byond, "~256"), "PushVal 16776959");
+}

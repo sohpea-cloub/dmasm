@@ -122,13 +122,17 @@ pub(super) fn value(c: &Compiler, expr: &Expression) -> Option<Constant> {
             } else {
                 (base_value(c, &term.elem)?, &follow[..])
             };
-            // Unary operators are applied innermost first
-            for f in follow.iter().rev() {
+            // Unary operators come innermost first (`-~1` is -(~1))
+            for f in follow.iter() {
                 v = match (&f.elem, v) {
                     (Follow::Unary(UnaryOp::Neg), Constant::Number(n)) => Constant::Number(-n),
                     (Follow::Unary(UnaryOp::Not), c) => Constant::Number(!c.truthy() as i32 as f32),
                     (Follow::Unary(UnaryOp::BitNot), Constant::Number(n)) => {
                         Constant::Number(not_bits(n) as f32)
+                    }
+                    // text and null are 0 to it
+                    (Follow::Unary(UnaryOp::BitNot), Constant::Text(_) | Constant::Null) => {
+                        Constant::Number(not_bits(0.0) as f32)
                     }
                     _ => return None,
                 };
