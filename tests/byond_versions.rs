@@ -137,3 +137,14 @@ fn language_515_lacks_is_refused() {
     assert!(err.contains("doesn't have __PROC__"), "{err}");
     assert!(compile_for(ByondVersion::new(515, 1644), "/proc/f(a)\n\treturn __PROC__\n").is_ok());
 }
+
+#[test]
+fn safe_element_changes_restore_the_cache_first_from_516_1685() {
+    let code = "/datum/t\n\tvar/list/l = list(1)\n/proc/f(datum/t/a, b)\n\ta?.l[1] += b\n";
+    let new = compile_for(ByondVersion::new(516, 1685), code).unwrap();
+    assert!(new.contains("PushCache\nGetVar arg(1)\nPopCache\nGetVar cache[\"l\"]\nPushInt 1\nSetVar cache_key"), "{new}");
+    for byond in [ByondVersion::new(516, 1684), ByondVersion::new(515, 1637)] {
+        let old = compile_for(byond, code).unwrap();
+        assert!(old.contains("PushCache\nGetVar arg(1)\nGetVar cache[\"l\"]\nPushInt 1\nPopCache\nSetVar cache_key"), "{old}");
+    }
+}

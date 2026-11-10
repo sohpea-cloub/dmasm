@@ -1484,9 +1484,15 @@ pub(super) fn emit_safe_chain_write(
             ends.pop().map(|end| compiler.emit_label(end));
         }
         (Some(fields), SafeWrite::Change(write), Some(index)) => {
-            compiler.emit_ins(Instruction::PopCache);
+            let restore_first = compiler.byond.at_least(super::versions::SAFE_ELEMENT_CACHE);
+            if restore_first {
+                compiler.emit_ins(Instruction::PopCache);
+            }
             compiler.emit_ins(Instruction::GetVar(field_var(&fields)));
             emit_value(compiler, &index)?;
+            if !restore_first {
+                compiler.emit_ins(Instruction::PopCache);
+            }
             compiler.emit_ins(Instruction::SetVar(Variable::CacheKey));
             compiler.emit_ins(Instruction::SetVar(Variable::Cache));
             for ins in write(Variable::CacheIndex) {
