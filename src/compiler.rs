@@ -634,6 +634,29 @@ impl<'a> Compiler<'a> {
             }
             Expression::AssignOp { op, lhs, rhs } => assignment::emit(self, op, *lhs, *rhs),
 
+            // `locate(X) in a in b` is `(locate(X) in a) in b`
+            Expression::Base { term, follow }
+                if follow.is_empty()
+                    && matches!(&term.elem, dreammaker::ast::Term::Locate { in_list: Some(list), .. }
+                        if matches!(**list, Expression::BinaryOp { op: dreammaker::ast::BinaryOp::In, .. })) =>
+            {
+                let dreammaker::ast::Term::Locate { args, in_list: Some(list) } = term.elem else {
+                    unreachable!()
+                };
+                let Expression::BinaryOp { lhs, rhs, .. } = *list else { unreachable!() };
+                let locate = Expression::Base {
+                    term: Box::new(dreammaker::ast::Spanned::new(
+                        term.location,
+                        dreammaker::ast::Term::Locate { args, in_list: Some(lhs) },
+                    )),
+                    follow,
+                };
+                self.emit_expr(Expression::BinaryOp {
+                    op: dreammaker::ast::BinaryOp::In,
+                    lhs: Box::new(locate),
+                    rhs,
+                })
+            }
             // `&(x)` is `&x`, and `*(p)` is `*p` (but `*(&x)` reads the
             // pointer it makes)
             Expression::Base { term, follow }

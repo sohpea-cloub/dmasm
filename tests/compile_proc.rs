@@ -806,3 +806,10 @@ fn a_type_scope_default_records_where_it_is_written() {
         ["DbgFile \"test.dm\"", "DbgLine 4", "DbgLine 2", "PushInt 3", "SetVar arg(0)", "DbgLine 5", "GetVar arg(0)", "Ret", "End"]
     );
 }
+
+#[test]
+fn locate_in_a_list_in_another() {
+    // `locate(X) in a in b` is `(locate(X) in a) in b`
+    let code = compile("/datum/t\n/proc/f(a, b)\n\treturn locate(/datum/t) in a in b\n", "", "f");
+    assert_eq!(code, "GetVar arg(1)\nPushVal /datum/t\nGetVar arg(0)\nLocateType\nIsIn Value\nGetFlag\nRet\nEnd");
+}
