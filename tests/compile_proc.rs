@@ -762,3 +762,16 @@ fn an_if_decided_when_compiled_forgets_the_cache_after_it() {
     let src = "/datum/t\n\tvar/a = 1\n\tvar/b = 2\n/proc/f(datum/t/p, n)\n\tif (1) n = p.a\n\treturn p.b\n";
     assert_has(&compile(src, "", "f"), &["SetVar arg(1)", "GetVar cache = arg(0); cache[\"b\"]"]);
 }
+
+#[test]
+fn initial_of_a_static_or_const_is_its_globals() {
+    let types = "/datum/t\n\tvar/n = 1\n\tvar/static/s = 2\n\tvar/const/k = 3\n\tvar/datum/t/o\n";
+    let code = compile(&format!("{types}/proc/f(datum/t/a)\n\treturn initial(a.o.s) + initial(a.k)\n"), "", "f");
+    assert_has(&code, &["GetVar initial(global(\"s\"))", "GetVar initial(global(\"k\"))", "Add"]);
+    // through ?., later ones are saved around
+    let code = compile(&format!("{types}/proc/f(datum/t/a)\n\treturn initial(a?.o?.n)\n"), "", "f");
+    assert_has(
+        &code,
+        &["GetVar arg(0)", "SetVar cache", "PushCache", "GetVar cache[\"o\"]", "SetVar cache", "PopCache", "GetVar initial(cache[\"n\"])"],
+    );
+}

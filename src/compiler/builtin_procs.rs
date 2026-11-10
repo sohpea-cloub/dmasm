@@ -431,6 +431,9 @@ pub(super) fn emit(
                     builder.get_initial_field(DMString(field.into()))
                 }
 
+                // a static or const var read through a field (`initial(a.s)`)
+                EvalKind::Var(global @ Variable::Global(_)) => Variable::Initial(Box::new(global)),
+
                 // initial(L[k]), as in initial(D.vars[name])
                 EvalKind::ListRef => {
                     compiler.emit_ins(Instruction::SetVar(Variable::CacheKey));
@@ -1141,6 +1144,9 @@ fn initial_safe(
         segments.last_mut().unwrap().push(name.to_string());
     }
     let last = segments.pop().unwrap();
+    // (DreamMaker saves the cache around each later `?.`, so the var is
+    // read from what the first one found)
+    let saved = segments.len();
     let chain = |fields: &[String]| {
         let mut builder = super::chain_builder::ChainBuilder::begin(Variable::Cache);
         for f in &fields[..fields.len() - 1] {
@@ -1150,10 +1156,18 @@ fn initial_safe(
     };
     for fields in segments {
         compiler.emit_ins(Instruction::SetVar(Variable::Cache));
+        compiler.emit_ins(Instruction::PushCache);
         let field = DMString(fields[fields.len() - 1].clone().into_bytes());
         compiler.emit_ins(Instruction::GetVar(chain(&fields).get_field(field)));
     }
     compiler.emit_ins(Instruction::SetVar(Variable::Cache));
+    for _ in 0..saved {
+        compiler.emit_ins(Instruction::PopCache);
+    }
+    // (a static or const var's is its global's)
+    if let Some(global) = super::statements::static_place(compiler, expr, false) {
+        return Ok(Some(Variable::Initial(Box::new(global))));
+    }
     let field = DMString(last[last.len() - 1].clone().into_bytes());
     Ok(Some(chain(&last).get_initial_field(field)))
 }

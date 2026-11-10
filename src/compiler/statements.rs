@@ -1613,7 +1613,7 @@ pub(super) fn emit_safe_chain_write(
 
 /// The global a place ending in a static var's field is (`a?.s`, or the list
 /// in `a?.s[k]` when `indexed`).
-fn static_place(compiler: &Compiler, place: &Expression, indexed: bool) -> Option<Variable> {
+pub(super) fn static_place(compiler: &Compiler, place: &Expression, indexed: bool) -> Option<Variable> {
     let Expression::Base { term, follow } = place else {
         return None;
     };
