@@ -434,10 +434,12 @@ fn emit_proc_assignment(
             _ => return Err(CompileError::ExpectedLValue),
         };
         // A field of a computed value (`f().x = y`): the value is copied
-        // before finding the field, like a list element's
-        let computed = compiler.nodes[start..].iter().any(|n| {
-            matches!(n, crate::Node::Instruction(Instruction::SetVar(Variable::Cache), _))
-        });
+        // before finding the field, like a list element's; and so is one
+        // written through a pointer
+        let computed = matches!(var, Variable::PtrDeref(_))
+            || compiler.nodes[start..].iter().any(|n| {
+                matches!(n, crate::Node::Instruction(Instruction::SetVar(Variable::Cache), _))
+            });
         if computed {
             compiler
                 .nodes

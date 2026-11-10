@@ -46,6 +46,8 @@ fn is_writable(var: &Variable) -> bool {
         | Variable::Local { .. }
         // TODO: Stuff like global.vars are constant and should return false here.
         | Variable::Global { .. } => true,
+        // `*p = x` writes through the pointer
+        Variable::PtrDeref(_) => true,
         _ => false,
     }
 }

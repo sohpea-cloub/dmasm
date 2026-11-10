@@ -487,3 +487,21 @@ fn parenthesised_assignment_is_a_list_key() {
     let code = compile("/proc/g(a, b)\n\treturn b\n/proc/f(a, b, c)\n\treturn g(a, (b = 1))\n", "", "f");
     assert_has(&code, &["GetVar arg(0)", "PushInt 1", "SetVarExpr arg(1)", "CallGlob 2 /proc/g"]);
 }
+
+#[test]
+fn writing_through_a_pointer() {
+    let code = compile("/proc/f(a)\n\tvar/p = &a\n\t*p = 2\n\treturn a\n", "", "f");
+    assert_has(&code, &["PushInt 2", "SetVar *local(0)", "GetVar arg(0)"]);
+    let code = compile("/proc/f(a)\n\tvar/p = &a\n\t*p += 2\n\treturn a\n", "", "f");
+    assert_has(&code, &["PushInt 2", "AugAdd *local(0)", "GetVar arg(0)"]);
+    // as a value, the value is copied first
+    let code = compile("/proc/f(a)\n\tvar/p = &a\n\treturn (*p = 3)\n", "", "f");
+    assert_has(&code, &["PushInt 3", "PushTop", "SetVar *local(0)", "Ret"]);
+    // in parentheses
+    let code = compile(
+        "/proc/f(a)\n\tvar/p = &a\n\t(*p)++\n\t(*p) = 6\n\treturn a\n",
+        "",
+        "f",
+    );
+    assert_has(&code, &["Inc *local(0)", "PushInt 6", "SetVar *local(0)"]);
+}

@@ -1190,6 +1190,18 @@ fn emit_loop_body(
     res
 }
 
+/// An expression without the parentheses around it: `(x) = y` assigns to x.
+fn unparenthesised(expr: &Expression) -> Expression {
+    let mut expr = expr;
+    while let Expression::Base { term, follow } = expr {
+        match &term.elem {
+            Term::Expr(inner) if follow.is_empty() => expr = inner,
+            _ => break,
+        }
+    }
+    expr.clone()
+}
+
 /// The writable variable an expression's result names.
 fn lvalue_var(compiler: &mut Compiler, kind: EvalKind) -> Result<Variable, CompileError> {
     match kind {
@@ -1588,7 +1600,7 @@ fn emit_expr_statement_inner(compiler: &mut Compiler, expr: &Expression) -> Resu
             }
             emit_value(compiler, rhs)?;
             compiler.implicit_type = None;
-            let kind = compiler.emit_inner_expr((**lhs).clone())?;
+            let kind = compiler.emit_inner_expr(unparenthesised(lhs))?;
             if *op == AssignOp::Assign {
                 if kind == EvalKind::ListRef {
                     compiler.emit_ins(Instruction::ListSet);
@@ -1614,10 +1626,11 @@ fn emit_expr_statement_inner(compiler: &mut Compiler, expr: &Expression) -> Resu
             let Some(Follow::Unary(op)) = follow.last().map(|f| f.elem.clone()) else {
                 unreachable!()
             };
-            let inner = Expression::Base {
+            // (`(*p)++` steps what p points at)
+            let inner = unparenthesised(&Expression::Base {
                 term: term.clone(),
                 follow: follow[..follow.len() - 1].to_vec().into_boxed_slice(),
-            };
+            });
             let inc = matches!(op, UnaryOp::PreIncr | UnaryOp::PostIncr);
             let step = move |var: Variable| {
                 vec![if inc {
