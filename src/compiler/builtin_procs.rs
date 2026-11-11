@@ -413,9 +413,9 @@ pub(super) fn emit(
         return Ok(Some(EvalKind::Stack));
     }
 
-    // rgb2num("#rrggbb") is worked out when compiling
-    if name == "rgb2num" && args.len() == 1 {
-        if let Some(channels) = rgb2num_const(compiler, &args[0]) {
+    // rgb2num() of a constant colour is worked out when compiling
+    if name == "rgb2num" {
+        if let Some(channels) = rgb2num_const(compiler, args) {
             for c in &channels {
                 compiler.emit_ins(Instruction::PushInt(*c as i32));
             }
@@ -1341,17 +1341,94 @@ fn initial_safe(
     Ok(Some(chain(&last).get_initial_field(field)))
 }
 
-/// The channels of a constant `"#rrggbb"` or `"#rrggbbaa"`.
-fn rgb2num_const(compiler: &Compiler, expr: &Expression) -> Option<Vec<u8>> {
-    let super::fold::Constant::Text(t) = super::fold::value(compiler, expr)? else {
-        return None;
+/// The colours `rgb2num()` knows by name, whatever their case.
+const NAMED_COLOURS: &[(&str, &[u8])] = &[
+    ("aqua", &[0, 255, 255]),
+    ("black", &[0, 0, 0]),
+    ("blue", &[0, 0, 255]),
+    ("cyan", &[0, 255, 255]),
+    ("fuchsia", &[255, 0, 255]),
+    ("gold", &[128, 128, 0]),
+    ("gray", &[128, 128, 128]),
+    ("grey", &[128, 128, 128]),
+    ("green", &[0, 192, 0]),
+    ("lime", &[0, 255, 0]),
+    ("magenta", &[255, 0, 255]),
+    ("maroon", &[128, 0, 0]),
+    ("navy", &[0, 0, 128]),
+    ("olive", &[128, 128, 0]),
+    ("purple", &[128, 0, 128]),
+    ("red", &[255, 0, 0]),
+    ("silver", &[192, 192, 192]),
+    ("teal", &[0, 128, 128]),
+    ("white", &[255, 255, 255]),
+    ("yellow", &[255, 255, 0]),
+    ("transparent", &[0, 0, 0, 0]),
+    ("none", &[0, 0, 0, 0]),
+];
+
+/// The red, green, blue (and alpha) of a constant colour: `"#rrggbb"`,
+/// `"#rgb"`, either with an alpha, a colour's name, or null (white).
+fn colour_const(compiler: &Compiler, expr: &Expression) -> Option<Vec<u8>> {
+    let text = match super::fold::value(compiler, expr)? {
+        super::fold::Constant::Text(t) => t,
+        super::fold::Constant::Null => return Some(vec![255, 255, 255]),
+        _ => return None,
     };
-    let hex = std::str::from_utf8(&t).ok()?.strip_prefix('#')?;
-    if !matches!(hex.len(), 6 | 8) {
+    let text = std::str::from_utf8(&text).ok()?;
+    let Some(hex) = text.strip_prefix('#') else {
+        return NAMED_COLOURS
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(text))
+            .map(|(_, channels)| channels.to_vec());
+    };
+    if !hex.is_ascii() {
         return None;
     }
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
-        .collect()
+    match hex.len() {
+        // (a digit for a channel is that digit twice)
+        3 | 4 => hex
+            .chars()
+            .map(|c| Some(c.to_digit(16)? as u8 * 17))
+            .collect(),
+        6 | 8 => (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+            .collect(),
+        _ => None,
+    }
+}
+
+/// The colour space `rgb2num(colour, space)` is asked for, if it's constant
+/// and there is one (0 RGB, 1 HSV, 2 HSL, 3 HCY).
+fn rgb2num_space(compiler: &Compiler, args: &[Expression]) -> Option<u32> {
+    match args {
+        [_] => Some(0),
+        // (cut to a whole number; anything but 1, 2 and 3 is RGB, null and
+        // text too)
+        [_, space] => match super::fold::value(compiler, space)? {
+            super::fold::Constant::Number(n) if (1.0..4.0).contains(&n) => Some(n as u32),
+            super::fold::Constant::Number(_)
+            | super::fold::Constant::Null
+            | super::fold::Constant::Text(_) => Some(0),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The list `rgb2num()` of a constant colour is in the RGB space. (In the
+/// others DreamMaker folds it too, to numbers that are a single's last digit
+/// apart between Linux, Windows and 515.1637: those are left to run.)
+fn rgb2num_const(compiler: &Compiler, args: &[Expression]) -> Option<Vec<u8>> {
+    if rgb2num_space(compiler, args)? != 0 {
+        return None;
+    }
+    colour_const(compiler, &args[0])
+}
+
+/// Whether `rgb2num(...)` is a list DreamMaker knows when compiling, which
+/// is true where it's tested: the test is left out, list and all.
+pub(super) fn rgb2num_is_constant(compiler: &Compiler, args: &[Expression]) -> bool {
+    rgb2num_space(compiler, args).is_some() && colour_const(compiler, &args[0]).is_some()
 }

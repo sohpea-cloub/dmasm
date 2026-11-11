@@ -223,6 +223,71 @@ fn text2ascii_char_of_a_constant_folds() {
     }
 }
 
+/// `rgb2num()` of a constant colour is a list DreamMaker knows when compiling.
+#[test]
+fn rgb2num_of_a_constant_colour() {
+    for byond in [B515_1637, B516_1688] {
+        let v = |expr: &str| ret(byond, expr);
+        assert_eq!(
+            v("rgb2num(\"#102030\")"),
+            "PushInt 16\nPushInt 32\nPushInt 48\nNewList 3"
+        );
+        assert_eq!(
+            v("rgb2num(\"#10203040\")"),
+            "PushInt 16\nPushInt 32\nPushInt 48\nPushInt 64\nNewList 4"
+        );
+        // a digit for a channel is that digit twice
+        assert_eq!(
+            v("rgb2num(\"#123\")"),
+            "PushInt 17\nPushInt 34\nPushInt 51\nNewList 3"
+        );
+        assert_eq!(
+            v("rgb2num(\"#1234\")"),
+            "PushInt 17\nPushInt 34\nPushInt 51\nPushInt 68\nNewList 4"
+        );
+        // names, whatever their case; null is white
+        assert_eq!(
+            v("rgb2num(\"Green\")"),
+            "PushInt 0\nPushInt 192\nPushInt 0\nNewList 3"
+        );
+        assert_eq!(
+            v("rgb2num(\"none\")"),
+            "PushInt 0\nPushInt 0\nPushInt 0\nPushInt 0\nNewList 4"
+        );
+        assert_eq!(
+            v("rgb2num(null)"),
+            "PushInt 255\nPushInt 255\nPushInt 255\nNewList 3"
+        );
+        // a space that isn't HSV, HSL or HCY is RGB
+        assert_eq!(
+            v("rgb2num(\"#102030\", COLORSPACE_RGB)"),
+            "PushInt 16\nPushInt 32\nPushInt 48\nNewList 3"
+        );
+        assert_eq!(
+            v("rgb2num(\"#102030\", 5)"),
+            "PushInt 16\nPushInt 32\nPushInt 48\nNewList 3"
+        );
+        // in another space the numbers differ by who works them out: left to run
+        assert_eq!(
+            v("rgb2num(\"#102030\", COLORSPACE_HSV)"),
+            "PushVal \"#102030\"\nPushInt 1\nRgb2Num"
+        );
+        // what isn't a colour runs
+        assert_eq!(
+            v("rgb2num(\"#GGGGGG\")"),
+            "PushVal \"#GGGGGG\"\nPushInt 0\nRgb2Num"
+        );
+        assert_eq!(
+            v("rgb2num(\"pink\")"),
+            "PushVal \"pink\"\nPushInt 0\nRgb2Num"
+        );
+        // where it's tested it's true, and the list isn't made (in any space)
+        assert_eq!(v("rgb2num(\"#102030\") ? a : 2"), "GetVar arg(0)");
+        assert_eq!(v("rgb2num(\"red\", COLORSPACE_HSV) && a"), "GetVar arg(0)");
+        assert_eq!(v("!rgb2num(\"#123\")"), "PushInt 0");
+    }
+}
+
 /// Rarer ways to call a builtin, as DreamMaker writes them.
 #[test]
 fn rarer_forms_of_builtins() {

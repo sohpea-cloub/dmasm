@@ -80,6 +80,12 @@ forms) with each build's DreamMaker and comparing. Builds checked: 515.1637, 515
   does from 515.1647, and warns for a colour that near a half, which Windows may have
   rounded the other way; before 515.1647 it leaves that colour to run (an encoding
   difference).
+- **`rgb2num()` of a constant colour** (`"#rrggbb"`, `"#rgb"`, either with an alpha, one of
+  22 names in any case, or null, which is white) is a list of whole numbers in the RGB
+  space, which any space but 1, 2 and 3 is. Where it's tested it's true in any space and
+  the list isn't made. In HSV, HSL and HCY DreamMaker folds it as well, to numbers that
+  are a single's last digit apart between Linux, Windows and 515.1637 (`60.000004` for a
+  value of 60): the compiler leaves those to run (an encoding difference).
 - **Windows.** DreamMaker on Windows folds those angles and colours differently. A
   colour is worked out at run time by each DreamDaemon as its own DreamMaker folds it;
   an angle is Linux's at run time on both. Nothing

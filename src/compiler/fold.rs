@@ -312,6 +312,12 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
             Constant::New
         }
         Term::List(args) | Term::Alist(args) if constant_args(c, args) => Constant::New,
+        // (and the list rgb2num() makes of a constant colour)
+        Term::Call(name, args)
+            if name.as_str() == "rgb2num" && super::builtin_procs::rgb2num_is_constant(c, args) =>
+        {
+            Constant::New
+        }
         // A proc's type (null in a global proc) and its own path
         Term::__TYPE__ => match c.proc.as_ref()? {
             p if p.ty.is_root() => Constant::Null,
