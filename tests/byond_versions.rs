@@ -386,3 +386,33 @@ fn a_comparison_a_logical_operator_folds_to_is_tested_as_a_value() {
         );
     }
 }
+
+#[test]
+fn a_logical_assignment_saves_the_cache_by_its_values_source() {
+    let code = |body: &str| {
+        compile_for(
+            B516_1688,
+            &format!("/datum/d\n\tvar/x\n/proc/f(datum/d/a, list/L, b)\n\t{body}\n"),
+        )
+        .unwrap()
+    };
+    // `null ? L.len : 2` folds to 2, but L.len is there in the source
+    let partly = code("a.x ||= (b ? (null ? L.len : 2) : 3)");
+    assert!(
+        partly.contains("PushCache") && partly.contains("PopCache"),
+        "{partly}"
+    );
+    let side = code("a.x &&= (0 ? L.len : b)");
+    assert!(
+        side.contains("PushCache\nGetVar arg(2)\nPopCache"),
+        "{side}"
+    );
+    // as a value too
+    let value = code("return (a.x ||= (b ? (null ? L.len : 2) : 3))");
+    assert!(
+        value.contains("PushCache") && value.contains("PopCache\nSetVarExpr"),
+        "{value}"
+    );
+    // a value that has no use for the cache in its source doesn't
+    assert!(!code("a.x ||= (b ? 2 : 3)").contains("PushCache"));
+}

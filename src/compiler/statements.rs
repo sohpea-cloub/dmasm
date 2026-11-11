@@ -1255,6 +1255,18 @@ fn saves_cache(compiler: &Compiler, start: usize) -> bool {
 /// Whether `value` would save the cache with nothing folded: it's compiled
 /// that way and thrown away.
 fn unfolded_saves_cache(compiler: &mut Compiler, value: &Expression) -> bool {
+    unfolded_has(compiler, value, |compiler, start| {
+        compiler.global_field || saves_cache(compiler, start)
+    })
+}
+
+/// Whether `found` holds of `value`'s code (from the place it's given) with
+/// nothing folded: it's compiled that way and thrown away.
+pub(super) fn unfolded_has(
+    compiler: &mut Compiler,
+    value: &Expression,
+    found: impl Fn(&Compiler, usize) -> bool,
+) -> bool {
     let start = compiler.nodes.len();
     let saved = (
         compiler.label_count,
@@ -1269,7 +1281,7 @@ fn unfolded_saves_cache(compiler: &mut Compiler, value: &Expression) -> bool {
     compiler.global_field = false;
     let ok = emit_value(compiler, value).is_ok();
     compiler.no_fold = false;
-    let saves = ok && (compiler.global_field || saves_cache(compiler, start));
+    let saves = ok && found(compiler, start);
     compiler.nodes.truncate(start);
     (
         compiler.label_count,
@@ -1954,11 +1966,11 @@ fn emit_expr_statement_inner(
                 emit_value(compiler, rhs)?;
                 compiler.implicit_type = None;
                 // (a global proc call or a list element counts too; DreamMaker
-                // goes by the source, even what folding leaves out)
+                // goes by the source, even what folding leaves out of it, in
+                // a part of the value as in the whole)
                 let saves = std::mem::take(&mut compiler.global_field)
                     || saves_cache(compiler, start)
-                    || (super::fold::value(compiler, rhs).is_some()
-                        && unfolded_saves_cache(compiler, rhs));
+                    || unfolded_saves_cache(compiler, rhs);
                 // (a list element's key too, when the value indexes a list)
                 let saves_key = !field
                     && compiler.nodes[start..]

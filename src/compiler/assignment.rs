@@ -495,10 +495,16 @@ fn emit_proc_assignment(
             let kind = compiler.emit_expr(rhs.clone())?;
             compiler.emit_move_to_stack(kind)?;
             compiler.implicit_type = None;
-            let saves = cached
-                && compiler.nodes[start..]
+            // (DreamMaker goes by the source, even what folding leaves out)
+            let touches = |compiler: &Compiler<'_>, start: usize| {
+                compiler.nodes[start..]
                     .iter()
-                    .any(|n| matches!(n, crate::Node::Instruction(i, _) if super::procs::touches_cache(i)));
+                    .any(|n| matches!(n, crate::Node::Instruction(i, _) if super::procs::touches_cache(i)))
+            };
+            let saves = cached
+                && (touches(compiler, start)
+                    || (compiler.proc.is_some()
+                        && super::statements::unfolded_has(compiler, rhs, touches)));
             if saves {
                 compiler
                     .nodes
