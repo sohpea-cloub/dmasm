@@ -172,7 +172,6 @@ simple_stack_procs! {
     /proc/isnum(val) => Instruction::IsNum,
     /proc/istext(val) => Instruction::IsText,
     /proc/jointext(list, glue, start = 1, end = null) => Instruction::JoinText,
-    /proc/json_decode(json) => Instruction::JsonDecode,
     /proc/length(val) => Instruction::Length,
     /proc/length_char(val) => Instruction::LengthChar,
     /proc/load_ext(library, function) => Instruction::LoadExt,
@@ -628,6 +627,10 @@ fn emit_overloaded(
         "json_encode" => by_count(&[
             (1, Instruction::JsonEncode),
             (2, Instruction::JsonEncodeFlags(2)),
+        ]),
+        "json_decode" => by_count(&[
+            (1, Instruction::JsonDecode),
+            (2, Instruction::JsonDecodeFlags(2)),
         ]),
         "astype" => by_count(&[(2, Instruction::AsType)]),
         "time2text" if n == 3 => Some(Instruction::Time2TextTZ(3)),

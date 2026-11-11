@@ -171,6 +171,17 @@ fn tan_folds_as_each_build_does() {
 }
 
 #[test]
+fn json_decode_takes_flags() {
+    for byond in [B515_1637, B516_1688] {
+        assert_eq!(ret(byond, "json_decode(a)"), "GetVar arg(0)\nJsonDecode");
+        assert_eq!(
+            ret(byond, "json_decode(a, 1)"),
+            "GetVar arg(0)\nPushInt 1\nJsonDecodeFlags 2"
+        );
+    }
+}
+
+#[test]
 fn text2ascii_char_of_a_constant_folds() {
     for byond in [B515_1637, B516_1688] {
         assert_eq!(ret(byond, "text2ascii_char(\"abc\")"), "PushInt 97");
