@@ -28,12 +28,6 @@ const NEW_IN_516: &[&str] = &[
     "pixloc",
 ];
 
-/// The first build known to work out a folded colour's channels (`rgb()` of
-/// constants in the HSV, HSL or HCY space) as `fold::rgb_text` does. 515.1637
-/// keeps other steps in single precision, which shows in a channel that's
-/// between two values, or nearly; the builds between weren't probed.
-pub(super) const DOUBLE_COLOURS: u32 = 1647;
-
 /// The first build that restores the cache before reading the list and index
 /// of a list element it changes through `?.` (`a?.L[k] += x`, `a?.L[k] ||= x`);
 /// before it the list is read from whatever the value left in the cache.

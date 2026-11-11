@@ -394,16 +394,16 @@ fn a_colour_of_constants_is_its_text_in_any_colour_space() {
     // an alpha that's null (or text) is 0
     assert_eq!(text("rgb(1, 2, 3, null)"), "PushVal \"#01020300\"");
     assert_eq!(
-        text("rgb(h = 120, s = 100, v = 50, a = null)"),
-        "PushVal \"#00800000\""
+        text("rgb(h = 120, s = 100, v = 60, a = null)"),
+        "PushVal \"#00990000\""
     );
     // HSV and HSL keep their saturation and the rest to [0, 100]
-    assert_eq!(text("rgb(h = 120, s = 100, v = 50)"), "PushVal \"#008000\"");
+    assert_eq!(text("rgb(h = 120, s = 100, v = 60)"), "PushVal \"#009900\"");
     assert_eq!(
-        text("rgb(359, 50, 50, 200, COLORSPACE_HSV)"),
-        "PushVal \"#804041c8\""
+        text("rgb(359, 60, 60, 200, COLORSPACE_HSV)"),
+        "PushVal \"#993d3fc8\""
     );
-    assert_eq!(text("rgb(h = -30, s = 150, v = 50)"), "PushVal \"#800040\"");
+    assert_eq!(text("rgb(h = -30, s = 150, v = 64)"), "PushVal \"#a30052\"");
     assert_eq!(text("rgb(l = 13, h = 351, s = 180)"), "PushVal \"#42000a\"");
     // HCY doesn't, and its green weighs 0.557
     assert_eq!(text("rgb(h = 120, c = 100, y = 50)"), "PushVal \"#00e500\"");
@@ -414,58 +414,36 @@ fn a_colour_of_constants_is_its_text_in_any_colour_space() {
     assert_eq!(text("rgb(h = -27, y = -5, c = 255)"), "PushVal \"#001400\"");
     // and it's a constant where it's used
     assert_eq!(
-        text("rgb(h = 120, s = 100, l = 50) + \"x\""),
-        "PushVal \"#00ff00x\""
+        text("rgb(h = 120, s = 100, l = 60) + \"x\""),
+        "PushVal \"#33ff33x\""
     );
     // 515 works with an HSV saturation beyond 100 as it is
     assert_eq!(
-        ret(B515_1647, "rgb(h = 90, s = 100.4, v = 50)"),
-        "PushVal \"#3f8000\""
+        ret(B515_1647, "rgb(h = 90, s = 100.4, v = 64)"),
+        "PushVal \"#51a300\""
     );
     assert_eq!(
-        ret(B516_1659, "rgb(h = 90, s = 100.4, v = 50)"),
-        "PushVal \"#408000\""
+        ret(B516_1659, "rgb(h = 90, s = 100.4, v = 64)"),
+        "PushVal \"#52a300\""
     );
-    // A saturation and the like are shares of 1 in single precision, and a
-    // channel is rounded as a single: these are right between two values
+    // A channel right between two values, or nearly, is left to run: Linux's
+    // and Windows' DreamMaker (and 515.1637) round it differently, as their
+    // DreamDaemons do
+    for byond in [B515_1637, B515_1647, B516_1688] {
+        assert!(ret(byond, "rgb(0, 60, 25, space = COLORSPACE_HSV)").ends_with("RgbEx"));
+        assert!(ret(byond, "rgb(0, 0, 70, space = COLORSPACE_HSV)").ends_with("RgbEx"));
+        assert!(ret(byond, "rgb(180, 60, 25, space = COLORSPACE_HSL)").ends_with("RgbEx"));
+        assert!(ret(byond, "rgb(0, 60, 25, space = COLORSPACE_HCY)").ends_with("RgbEx"));
+        assert!(ret(byond, "rgb(158, 53, 70, 64, COLORSPACE_HSV)").ends_with("RgbEx"));
+        // away from a half it folds
+        assert_eq!(
+            ret(byond, "rgb(0, 0, 71, space = COLORSPACE_HSV)"),
+            "PushVal \"#b5b5b5\""
+        );
+    }
     assert_eq!(
-        text("rgb(0, 60, 25, space = COLORSPACE_HSV)"),
-        "PushVal \"#401919\""
-    );
-    assert_eq!(
-        text("rgb(200, 100, 75, space = COLORSPACE_HSV)"),
-        "PushVal \"#0080bf\""
-    );
-    assert_eq!(
-        text("rgb(0, 0, 70, space = COLORSPACE_HSV)"),
-        "PushVal \"#b3b3b3\""
-    );
-    assert_eq!(
-        text("rgb(180, 60, 25, space = COLORSPACE_HSL)"),
-        "PushVal \"#196666\""
-    );
-    assert_eq!(
-        text("rgb(200, 80, 50, space = COLORSPACE_HSL)"),
-        "PushVal \"#19a2e6\""
-    );
-    assert_eq!(
-        text("rgb(0, 60, 25, space = COLORSPACE_HCY)"),
-        "PushVal \"#991919\""
-    );
-    assert_eq!(
-        ret(B515_1647, "rgb(330, 60, 75, space = COLORSPACE_HCY)"),
-        "PushVal \"#e6aac8\""
-    );
-    // Before 515.1647 a channel between two values, or nearly, is left to run
-    assert!(ret(B515_1637, "rgb(158, 53, 70, 64, COLORSPACE_HSV)").ends_with("RgbEx"));
-    assert!(ret(B515_1637, "rgb(0, 0, 70, space = COLORSPACE_HSV)").ends_with("RgbEx"));
-    assert_eq!(
-        ret(B515_1637, "rgb(0, 0, 71, space = COLORSPACE_HSV)"),
-        "PushVal \"#b5b5b5\""
-    );
-    assert_eq!(
-        ret(B515_1647, "rgb(158, 53, 70, 64, COLORSPACE_HSV)"),
-        "PushVal \"#54b39040\""
+        text("rgb(200, 100, 76, space = COLORSPACE_HSV)"),
+        "PushVal \"#0081c2\""
     );
     // What isn't constant runs
     assert!(text("rgb(a, 2, 3)").ends_with("Rgb"));

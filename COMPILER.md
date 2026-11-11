@@ -63,11 +63,14 @@ forms) with each build's DreamMaker and comparing. Builds checked: 515.1637, 515
   blue and alpha are cut to whole numbers; the channels worked out from HSV, HSL and HCY
   are rounded half up. HSL's saturation and luminance are held to 0 to 100, HSV's only
   from 516, and HCY's aren't; HCY weighs green 0.557 here (and 0.587 in `rgb2num`).
-  The saturation and the like are shares of 1 in single precision, the rest is worked
-  out in double, and a channel is put in single precision before it's rounded (so
-  178.499997 is 179). Before 515.1647 more of the steps are in single precision, which
-  shows where a channel is within a thousandth of a half: the compiler leaves that
-  colour to run there (an encoding difference).
+  DreamMaker on Linux (from 515.1647) takes the saturation and the like as shares of 1
+  in single precision, works the rest out in double, and puts a channel in single
+  precision before rounding it (so 178.499997 is 179). 515.1637 and DreamMaker on Windows
+  each mix the precisions another way, so a channel that's within a thousandth of a half
+  comes out one apart between them (276 of 31752 colours on a grid of 24 hues and every
+  5%), and each DreamDaemon rounds as its own DreamMaker. The compiler doesn't know which
+  built the world, and leaves such a colour to run (an encoding difference): the world's
+  own build then makes it what its DreamMaker would have.
 - **`isnan` and `isinf`** of a number fold from 516. Until 516.1669 (and in 516.1671) it folds only the
   test and still reads the flag (`PushInt 0; GetFlag`, which returns whatever the last
   test left: DreamMaker's bug, copied); 516.1670 and from 516.1672 it folds to a

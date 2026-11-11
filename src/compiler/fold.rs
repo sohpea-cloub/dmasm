@@ -737,9 +737,13 @@ pub(super) fn rgb_text(
             hex_byte(c as f64)
         ),
         1..=3 => {
-            // Builds before 515.1647 round in another precision, which shows
-            // where a channel is right between two values: left to run there
-            if byond.build < super::versions::DOUBLE_COLOURS && rounded(1e-3) != rounded(-1e-3) {
+            // Where a channel is right between two values, or nearly, what it
+            // rounds to depends on who works it out: DreamMaker on Linux
+            // (from 515.1647, which `rounded` follows), 515.1637 and
+            // DreamMaker on Windows each mix single and double precision
+            // their own way, and each DreamDaemon rounds as its DreamMaker
+            // does. Left to run, it's what the world's own build makes it.
+            if rounded(1e-3) != rounded(-1e-3) {
                 return None;
             }
             rounded(0.0)
