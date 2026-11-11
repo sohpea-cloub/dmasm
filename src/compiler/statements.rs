@@ -47,6 +47,16 @@ pub(super) fn emit_proc_body(
                 param.name
             ));
         }
+        // `x = a in L` is the default a, with L what a verb's argument is
+        // picked from: the `in` isn't the default's
+        let default = match default {
+            Expression::BinaryOp {
+                op: dreammaker::ast::BinaryOp::In,
+                lhs,
+                ..
+            } => &**lhs,
+            other => other,
+        };
         // (`datum/x = new` makes the parameter's type)
         compiler.implicit_type = implicit_type_for(compiler, &param.var_type.type_path.to_string());
         let kind = compiler.emit_expr(default.clone());

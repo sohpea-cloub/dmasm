@@ -413,6 +413,19 @@ fn a_global_const_named_through_global_folds() {
     assert!(code("switch (a)\n\t\tif (global.gc)\n\t\t\treturn 1").contains("Switch default => "));
 }
 
+/// A parameter's `x = a in L` has the default a.
+#[test]
+fn a_parameter_default_stops_at_in() {
+    let code = compile(
+        "/proc/f(a, b = a in list(1), c = (a in list(1)))\n\treturn b\n",
+        "",
+        "f",
+    );
+    assert_has(&code, &["GetVar arg(0)", "SetVar arg(1)"]);
+    // in parentheses it's the test
+    assert!(code.contains("IsIn"), "{code}");
+}
+
 /// As a value, `a.m.x++`, `a.m.x += v` and `a.m.x ||= v` leave nothing of the
 /// chain through fields for what comes after.
 #[test]
