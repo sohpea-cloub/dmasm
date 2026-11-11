@@ -251,7 +251,8 @@ fn math1(name: &str, x: f32, byond: crate::ByondVersion) -> Option<Option<f32>> 
         "ceil" => Some(d.ceil()),
         "floor" | "round" => Some(d.floor()),
         "trunc" => Some(d.trunc()),
-        "fract" => Some(d.fract()),
+        // (of an infinity it's 0)
+        "fract" => Some(if d.is_infinite() { 0.0 } else { d.fract() }),
         "abs" => Some(d.abs()),
         "sign" => Some(if d > 0.0 {
             1.0
@@ -324,7 +325,7 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
             };
             Constant::Text(hash(name.as_str(), &text).into_bytes())
         }
-        // arctan(x, y): the angle of (x, y), not of (0, 0)
+        // arctan(x, y): the angle of (x, y); of (0, 0) it's 0
         Term::Call(name, args) if name.as_str() == "arctan" && args.len() == 2 => {
             let (Constant::Number(x), Constant::Number(y)) =
                 (value(c, &args[0])?, value(c, &args[1])?)
@@ -332,7 +333,7 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
                 return None;
             };
             if x == 0.0 && y == 0.0 {
-                return None;
+                return Some(Constant::Number(0.0));
             }
             // (a y of -0 is 0 here: arctan(-1, -0) is 180, not -180)
             Constant::Number(
@@ -577,15 +578,44 @@ pub(super) fn warn_bits(c: &Compiler, x: f32) {
     }
 }
 
+/// A side of `%` as DreamMaker makes it an integer: beyond the i32 range
+/// it's the i32 furthest that way with the same sign (2**31 itself is still
+/// i32::MIN, as `int` has it).
+fn mod_int(x: f32) -> i32 {
+    if x > 2147483648.0 {
+        i32::MAX
+    } else if x < -2147483648.0 {
+        -i32::MAX
+    } else {
+        int(x)
+    }
+}
+
 fn numbers(op: BinaryOp, a: f32, b: f32) -> Option<f32> {
-    let shift = |x: f32| if x < 0.0 { 0 } else { x as i32 as u32 };
+    // (a shift takes the low five bits of its count, as x86 does: `1 << 33`
+    // is 2; the count is 65535 at most, and a negative one is none)
+    let shift = |x: f32| {
+        if x < 0.0 {
+            0
+        } else {
+            x.min(65535.0) as u32 & 31
+        }
+    };
     Some(match op {
         BinaryOp::Add => a + b,
         BinaryOp::Sub => a - b,
         BinaryOp::Mul => a * b,
         BinaryOp::Div if b != 0.0 => a / b,
+        // (0 to a negative power is 0 to DreamMaker, but for -1: 1/0)
+        BinaryOp::Pow if a == 0.0 && (b < 0.0 || b.is_nan()) => {
+            if b == -1.0 {
+                f32::INFINITY
+            } else {
+                0.0
+            }
+        }
         BinaryOp::Pow => a.powf(b),
-        BinaryOp::Mod if int(b) != 0 => int(a).wrapping_rem(int(b)) as f32,
+        BinaryOp::Mod if int(b) != 0 => mod_int(a).wrapping_rem(mod_int(b)) as f32,
         // fmod, worked out in double precision
         BinaryOp::FloatMod if b != 0.0 => (a as f64 % b as f64) as f32,
         BinaryOp::BitAnd => (bits(a) & bits(b)) as f32,
@@ -593,8 +623,8 @@ fn numbers(op: BinaryOp, a: f32, b: f32) -> Option<f32> {
         BinaryOp::BitXor => (bits(a) ^ bits(b)) as f32,
         // A negative number shifted left is 0, as with ~; shifted right it's
         // its 24 bits
-        BinaryOp::LShift => (bits(a.max(0.0)).checked_shl(shift(b)).unwrap_or(0) & 0xFFFFFF) as f32,
-        BinaryOp::RShift => bits(a).checked_shr(shift(b)).unwrap_or(0) as f32,
+        BinaryOp::LShift => ((bits(a.max(0.0)) << shift(b)) & 0xFFFFFF) as f32,
+        BinaryOp::RShift => (bits(a) >> shift(b)) as f32,
         _ => return None,
     })
 }

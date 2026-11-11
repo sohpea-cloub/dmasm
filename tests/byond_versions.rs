@@ -170,6 +170,39 @@ fn tan_folds_as_each_build_does() {
     assert_eq!(ret(B516_1688, "tan(1e10)"), "PushVal -5.671282");
 }
 
+/// Folds at the edges, as DreamMaker has them on every build.
+#[test]
+fn folds_at_the_edges() {
+    for byond in [B515_1637, B516_1688] {
+        let folds = |expr: &str, to: &str| assert_eq!(ret(byond, expr), to, "{expr}");
+        // A shift takes the low five bits of its count, which is 65535 at most
+        folds("(1 << 32)", "PushInt 1");
+        folds("(1 << 33)", "PushInt 2");
+        folds("(1 << 31)", "PushInt 0");
+        folds("(16777215 << 36)", "PushVal 16777200");
+        folds("(255 >> 36)", "PushInt 15");
+        folds("(-1 >> 36)", "PushVal 1048575");
+        folds("(1 << 65505)", "PushInt 2");
+        folds("(1 << 65537)", "PushInt 0");
+        folds("(255 >> 131073)", "PushInt 0");
+        folds("(1 << -1)", "PushInt 1");
+        // Beyond the i32 range a side of % is the i32 furthest that way
+        folds("(3e9 % 7)", "PushInt 1");
+        folds("(-1e30 % 7)", "PushVal -1");
+        folds("(3e9 % 3e9)", "PushInt 0");
+        folds("(2147483648 % 7)", "PushVal -2");
+        folds("(7 % 3e9)", "PushInt 7");
+        // 0 to a negative power is 0, but for -1
+        folds("(0 ** -7)", "PushInt 0");
+        folds("(0 ** -0.5)", "PushInt 0");
+        folds("(0 ** -1)", "PushVal inf");
+        folds("(2 ** -1)", "PushVal 0.5");
+        folds("arctan(0, 0)", "PushInt 0");
+    }
+    // (515 doesn't fold fract)
+    assert_eq!(ret(B516_1688, "fract(1.#INF)"), "PushInt 0");
+}
+
 #[test]
 fn float_mod_folds() {
     assert_eq!(ret(B516_1688, "10 %% 3"), "PushInt 1");
