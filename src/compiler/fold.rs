@@ -381,8 +381,11 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
             };
             Constant::Text(hsl_text(n(&args[0])?, n(&args[1])?, n(&args[2])?, 0.0).into_bytes())
         }
-        // text2ascii("a") is 97, and of "" 0
-        Term::Call(name, args) if name.as_str() == "text2ascii" && args.len() == 1 => {
+        // text2ascii("a") is 97, and of "" 0 (text2ascii_char the same: both
+        // give the first character whole)
+        Term::Call(name, args)
+            if matches!(name.as_str(), "text2ascii" | "text2ascii_char") && args.len() == 1 =>
+        {
             match value(c, &args[0])? {
                 Constant::Text(t) => {
                     let c = String::from_utf8_lossy(&t).chars().next().unwrap_or('\0');

@@ -170,6 +170,15 @@ fn tan_folds_as_each_build_does() {
     assert_eq!(ret(B516_1688, "tan(1e10)"), "PushVal -5.671282");
 }
 
+#[test]
+fn text2ascii_char_of_a_constant_folds() {
+    for byond in [B515_1637, B516_1688] {
+        assert_eq!(ret(byond, "text2ascii_char(\"abc\")"), "PushInt 97");
+        assert_eq!(ret(byond, "text2ascii_char(\"é\")"), "PushInt 233");
+        assert_eq!(ret(byond, "text2ascii(\"é\")"), "PushInt 233");
+    }
+}
+
 /// A hexadecimal literal beyond an i32 is the number it is.
 #[test]
 fn a_hexadecimal_literal_beyond_an_i32() {
