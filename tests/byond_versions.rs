@@ -451,6 +451,10 @@ fn folds_at_the_edges() {
         folds("(5 / \"a\")", "PushInt 5");
         folds("(6 / null)", "PushInt 6");
         folds("tan(1.#INF)", "PushVal NaN");
+        // a NaN isn't out of a domain
+        folds("sqrt(1.#IND)", "PushVal NaN");
+        folds("arcsin(1.#IND)", "PushVal NaN");
+        folds("arccos(1.#INF - 1.#INF)", "PushVal NaN");
     }
     // (515 doesn't fold fract)
     assert_eq!(ret(B516_1688, "fract(1.#INF)"), "PushInt 0");

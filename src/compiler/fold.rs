@@ -246,7 +246,7 @@ fn static_const(
 /// Linux's is also what DreamDaemon makes of it at run time, on both.
 fn warn_angle(c: &Compiler, what: &str, folded: f32, radians: f64) {
     let windows = super::versions::degrees_on_windows(radians) as f32;
-    if windows != folded {
+    if windows != folded && !folded.is_nan() {
         c.warn(&format!(
             "{what} is folded to {folded}, as DreamMaker on Linux has it and as it is when worked out at run time: \
              DreamMaker on Windows folds it to {windows}, which is what a world built there has"
@@ -260,7 +260,8 @@ fn math1(name: &str, x: f32, byond: crate::ByondVersion) -> Option<Option<f32>> 
     let d = x as f64;
     let degrees = |radians: f64| super::versions::degrees(byond, radians);
     let r = match name {
-        "sqrt" => (d >= 0.0).then(|| d.sqrt()),
+        // (a NaN isn't out of any of these domains: it folds to itself)
+        "sqrt" => (!(d < 0.0)).then(|| d.sqrt()),
         "ceil" => Some(d.ceil()),
         "floor" | "round" => Some(d.floor()),
         "trunc" => Some(d.trunc()),
@@ -281,8 +282,8 @@ fn math1(name: &str, x: f32, byond: crate::ByondVersion) -> Option<Option<f32>> 
         } else {
             f64::NAN
         }),
-        "arcsin" => (-1.0..=1.0).contains(&d).then(|| degrees(d.asin())),
-        "arccos" => (-1.0..=1.0).contains(&d).then(|| degrees(d.acos())),
+        "arcsin" => (!(d < -1.0 || d > 1.0)).then(|| degrees(d.asin())),
+        "arccos" => (!(d < -1.0 || d > 1.0)).then(|| degrees(d.acos())),
         "arctan" => Some(degrees(d.atan())),
         _ => return None,
     };
