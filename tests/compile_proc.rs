@@ -371,6 +371,26 @@ fn a_logical_operator_folded_to_its_first_value_forgets_the_cache() {
     }
 }
 
+/// DreamMaker reads past an empty first part of a for that ends in a
+/// semicolon: `for (; a < 5; a++)` starts with `a < 5` and loops while `a++`.
+#[test]
+fn a_for_with_an_empty_first_part_is_read_past_it() {
+    let code = |head: &str| {
+        compile(
+            &format!("/proc/f(a, b)\n\tfor ({head})\n\t\tb++\n\treturn b\n"),
+            "",
+            "f",
+        )
+    };
+    let shifted = code("; a < 5; a++");
+    assert_has(&shifted, &["GetVar arg(0)", "PushInt 5", "Tl", "Pop"]);
+    assert_has(&shifted, &["PostInc arg(0)", "Test", "Jz"]);
+    // with commas it's the loop it looks like
+    let plain = code(", a < 5, a++");
+    assert_has(&plain, &["GetVar arg(0)", "PushInt 5", "Tl", "Test", "Jz"]);
+    assert!(plain.contains("\nInc arg(0)\nJmpLoop"), "{plain}");
+}
+
 /// `global.name` and `::name` of a const fold as the name alone does.
 #[test]
 fn a_global_const_named_through_global_folds() {
