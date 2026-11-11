@@ -600,8 +600,11 @@ fn binary_value(c: &Compiler, expr: &Expression) -> Option<Constant> {
                     };
                     numbers(*op, n(&a), n(&b)).map(Constant::Number)
                 }
-                // A number divided by text is the number
-                (Constant::Number(a), Constant::Text(_)) if *op == BinaryOp::Div => {
+                // A number divided by text is the number (and by null, where
+                // DreamMaker takes that: 516 calls it a division by zero)
+                (Constant::Number(a), Constant::Text(_) | Constant::Null)
+                    if *op == BinaryOp::Div =>
+                {
                     Some(Constant::Number(a))
                 }
                 _ => None,

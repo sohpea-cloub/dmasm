@@ -449,6 +449,7 @@ fn folds_at_the_edges() {
         folds("(null << 2)", "PushInt 0");
         folds("(5 >> \"a\")", "PushInt 5");
         folds("(5 / \"a\")", "PushInt 5");
+        folds("(6 / null)", "PushInt 6");
         folds("tan(1.#INF)", "PushVal NaN");
     }
     // (515 doesn't fold fract)
