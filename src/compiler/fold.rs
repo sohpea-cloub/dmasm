@@ -256,9 +256,7 @@ fn math1(name: &str, x: f32, byond: crate::ByondVersion) -> Option<Option<f32>> 
             0.0
         }),
         "sin" | "cos" => Some(super::versions::sin_cos(byond, name == "sin", d)),
-        // (516's tan() isn't worked out the way its sin() and cos() are, and
-        // nobody knows how: left to run)
-        "tan" if !byond.at_least(super::versions::BYOND_516) => Some(d.to_radians().tan()),
+        "tan" => x.is_finite().then(|| super::versions::tan(byond, x) as f64),
         "arcsin" => (-1.0..=1.0).contains(&d).then(|| degrees(d.asin())),
         "arccos" => (-1.0..=1.0).contains(&d).then(|| degrees(d.acos())),
         "arctan" => Some(degrees(d.atan())),

@@ -150,6 +150,44 @@ pub(super) fn sin_cos(byond: ByondVersion, sin: bool, x: f64) -> f64 {
     }
 }
 
+/// `tan(x)` of `x` degrees as `byond`'s DreamMaker folds it. 515 takes the
+/// tangent of the angle in radians. From 516 the angle is taken to
+/// (-180, 180], and its size split into a quarter turn and the rest; the
+/// tangent of the rest, or of what it lacks to 90 when that's less, is
+/// rounded to single precision, and from there turned over (in single
+/// precision) and negated as the quarter and the sign need. So `tan(90)` is
+/// -infinity and `tan(270)` infinity, and `tan(60)` is 1 / tan(30), a bit
+/// more than the tangent of 60.
+pub(super) fn tan(byond: ByondVersion, x: f32) -> f32 {
+    if !byond.at_least(BYOND_516) {
+        return (x as f64).to_radians().tan() as f32;
+    }
+    let mut a = x as f64 % 360.0;
+    if a > 180.0 {
+        a -= 360.0;
+    } else if a <= -180.0 {
+        a += 360.0;
+    }
+    let negative = a < 0.0;
+    let a = a.abs();
+    let quarter = (a / 90.0).floor();
+    let mut rest = a - 90.0 * quarter;
+    let mut inverse = false;
+    if rest > 45.0 {
+        rest = 90.0 - rest;
+        inverse = true;
+    }
+    let mut t = rest.to_radians().tan() as f32;
+    let odd = quarter as u32 % 2 == 1;
+    if odd != inverse {
+        t = 1.0 / t;
+    }
+    if odd != negative {
+        t = -t;
+    }
+    t
+}
+
 /// Whether DreamMaker folds this math builtin of a constant in `byond`.
 /// 515 leaves `ceil`, `floor`, `round`, `trunc` and `fract` to run, and 516
 /// folds `isnan` and `isinf` as well.

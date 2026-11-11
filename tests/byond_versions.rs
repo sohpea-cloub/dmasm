@@ -151,9 +151,19 @@ fn inverse_trig_rounds_radians_from_515_1647() {
 }
 
 #[test]
-fn tan_folds_in_515_only() {
+fn tan_folds_as_each_build_does() {
     assert_eq!(ret(B515_1647, "tan(90)"), "PushVal 16331240000000000");
-    assert_eq!(ret(B516_1688, "tan(30)"), "PushInt 30\nTan2");
+    // 516 works on the angle's quarter turn and the rest of it, in single
+    // precision from the tangent on
+    assert_eq!(ret(B516_1688, "tan(30)"), "PushVal 0.57735026");
+    assert_eq!(ret(B516_1688, "tan(60)"), "PushVal 1.7320509");
+    assert_eq!(ret(B516_1688, "tan(45)"), "PushInt 1");
+    assert_eq!(ret(B516_1688, "tan(89)"), "PushVal 57.28996");
+    assert_eq!(ret(B516_1688, "tan(90)"), "PushVal -inf");
+    assert_eq!(ret(B516_1688, "tan(270)"), "PushVal inf");
+    assert_eq!(ret(B516_1688, "tan(-90)"), "PushVal inf");
+    assert_eq!(ret(B516_1688, "tan(-180)"), "PushInt 0");
+    assert_eq!(ret(B516_1688, "tan(1e10)"), "PushVal -5.671282");
 }
 
 #[test]
