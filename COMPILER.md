@@ -54,8 +54,9 @@ forms) with each build's DreamMaker and comparing. Builds checked: 515.1637, 515
   angle to [0, 360) and splits off whole quarter turns, so `sin(180)` is exactly 0. From
   515.1644 the radians from `arcsin`, `arccos` and
   `arctan` are rounded to single precision before they're turned into degrees by
-  DreamMaker on Linux, and not on Windows: where the two differ (`arctan(2)` is 63.43495
-  and 63.434948) the compiler leaves the angle to run (an encoding difference). `%%`
+  DreamMaker on Linux, and not on Windows: for some angles the two are a single's last
+  digit apart (`arctan(2)` is 63.43495 and 63.434948). The compiler folds as Linux does,
+  and warns where Windows has the other. `%%`
   folds as `fmod` in double precision. 515's `tan` folds in double precision; 516's
   takes the angle to (-180, 180], splits off whole quarter turns, takes the tangent of
   what's left measured from the nearer axis (so of at most 45 degrees) in double
@@ -69,10 +70,17 @@ forms) with each build's DreamMaker and comparing. Builds checked: 515.1637, 515
   in single precision, works the rest out in double, and puts a channel in single
   precision before rounding it (so 178.499997 is 179). 515.1637 and DreamMaker on Windows
   each mix the precisions another way, so a channel that's within a thousandth of a half
-  comes out one apart between them (276 of 31752 colours on a grid of 24 hues and every
-  5%), and each DreamDaemon rounds as its own DreamMaker. The compiler doesn't know which
-  built the world, and leaves such a colour to run (an encoding difference): the world's
-  own build then makes it what its DreamMaker would have.
+  can come out one apart between them (276 of 31752 colours on a grid of 24 hues and
+  every 5% differ between Linux and Windows on 516.1688). The compiler folds as Linux
+  does from 515.1647, and warns for a colour that near a half, which Windows may have
+  rounded the other way; before 515.1647 it leaves that colour to run (an encoding
+  difference).
+- **Windows.** DreamMaker on Windows folds those angles and colours differently, and
+  each DreamDaemon works them out at run time as its own DreamMaker folds them. Nothing
+  else in the sweeps (61973 numeric expressions, 20676 of text, statements, switches,
+  text macros, every builtin at every argument count) differs between the two but
+  constants beyond 32 bits at a bit operator, which differ by build as well. The
+  compiler isn't told which built the world: it follows Linux.
 - **`isnan` and `isinf`** of a number fold from 516. Until 516.1669 (and in 516.1671) it folds only the
   test and still reads the flag (`PushInt 0; GetFlag`, which returns whatever the last
   test left: DreamMaker's bug, copied); 516.1670 and from 516.1672 it folds to a
@@ -136,7 +144,9 @@ DreamMaker quirk that changes what the code does:
   written without spaces), a proc called through `?.` whose arguments use the cache,
   `?.` in `||=`/`&&=` before 516.1673, `*p[i] = x` from 516.1668 (DreamMaker leaves the
   index out; the compiler writes the element), a constant beyond 32 bits at a bit
-  operator;
+  operator, and an angle or a colour folded as DreamMaker on Linux does where Windows
+  has, or may have, another (`arctan(2)`, a colour with a channel right between two
+  values);
 - quirks copied: `isnan()`/`isinf()` of a known number where the build gives the last
   test's flag (516.1648 to 516.1669, and 516.1671), and a list element changed through
   `?.` with a value that uses the cache before 516.1685 (the list is read from what the

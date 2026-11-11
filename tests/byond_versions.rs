@@ -136,19 +136,21 @@ fn inverse_trig_rounds_radians_from_515_1647() {
         "PushInt 90"
     );
     // From 515.1644 DreamMaker on Linux rounds the radians to single precision
-    // first, and on Windows it doesn't: where that shows, the angle is left to
-    // run (89.99999 and 90 here, 63.43495 and 63.434948 for arctan(2))
-    assert!(ret(ByondVersion::new(515, 1644), "arctan(16777215)").ends_with("ArcTan"));
+    // first (Windows' doesn't, which is warned about)
+    assert_eq!(
+        ret(ByondVersion::new(515, 1644), "arctan(16777215)"),
+        "PushVal 89.99999"
+    );
     assert_eq!(ret(B515_1637, "arctan(2)"), "PushVal 63.434948");
-    assert!(ret(B516_1688, "arctan(2)").ends_with("ArcTan"));
-    assert!(ret(B516_1688, "arctan(1, 2)").ends_with("ArcTan2"));
-    assert_eq!(ret(B516_1688, "arctan(1)"), "PushInt 45");
-    assert_eq!(ret(B516_1688, "arctan(1, 1)"), "PushInt 45");
+    assert_eq!(ret(B516_1688, "arctan(2)"), "PushVal 63.43495");
+    assert_eq!(ret(B516_1688, "arctan(1, 2)"), "PushVal 63.43495");
+    assert_eq!(ret(B516_1688, "arctan(3, -4)"), "PushVal -53.1301");
     // a y of -0 counts as 0
     assert_eq!(ret(B516_1688, "arctan(-1, -(0))"), "PushInt 180");
     assert_eq!(ret(B516_1688, "arctan(-1, 0 * -1)"), "PushInt 180");
+    assert_eq!(ret(B516_1688, "arctan(-1, -0.5)"), "PushVal -153.43495");
     assert_eq!(ret(B515_1637, "arccos(0.7071)"), "PushVal 45.000553");
-    assert!(ret(B516_1688, "arccos(0.7071)").ends_with("ArcCos"));
+    assert_eq!(ret(B516_1688, "arccos(0.7071)"), "PushVal 45.00055");
     assert_eq!(ret(B516_1688, "arcsin(0.5)"), "PushInt 30");
     // out of their domain: left to run
     assert_eq!(ret(B516_1688, "arcsin(2)"), "PushInt 2\nArcSin");
@@ -426,24 +428,48 @@ fn a_colour_of_constants_is_its_text_in_any_colour_space() {
         ret(B516_1659, "rgb(h = 90, s = 100.4, v = 64)"),
         "PushVal \"#52a300\""
     );
-    // A channel right between two values, or nearly, is left to run: Linux's
-    // and Windows' DreamMaker (and 515.1637) round it differently, as their
-    // DreamDaemons do
-    for byond in [B515_1637, B515_1647, B516_1688] {
-        assert!(ret(byond, "rgb(0, 60, 25, space = COLORSPACE_HSV)").ends_with("RgbEx"));
-        assert!(ret(byond, "rgb(0, 0, 70, space = COLORSPACE_HSV)").ends_with("RgbEx"));
-        assert!(ret(byond, "rgb(180, 60, 25, space = COLORSPACE_HSL)").ends_with("RgbEx"));
-        assert!(ret(byond, "rgb(0, 60, 25, space = COLORSPACE_HCY)").ends_with("RgbEx"));
-        assert!(ret(byond, "rgb(158, 53, 70, 64, COLORSPACE_HSV)").ends_with("RgbEx"));
-        // away from a half it folds
-        assert_eq!(
-            ret(byond, "rgb(0, 0, 71, space = COLORSPACE_HSV)"),
-            "PushVal \"#b5b5b5\""
-        );
-    }
+    // A channel right between two values, or nearly: DreamMaker on Linux takes
+    // a saturation and the like as shares of 1 in single precision and rounds
+    // the channel as a single (Windows' may round it the other way, which is
+    // warned about)
     assert_eq!(
-        text("rgb(200, 100, 76, space = COLORSPACE_HSV)"),
-        "PushVal \"#0081c2\""
+        text("rgb(0, 60, 25, space = COLORSPACE_HSV)"),
+        "PushVal \"#401919\""
+    );
+    assert_eq!(
+        text("rgb(200, 100, 75, space = COLORSPACE_HSV)"),
+        "PushVal \"#0080bf\""
+    );
+    assert_eq!(
+        text("rgb(0, 0, 70, space = COLORSPACE_HSV)"),
+        "PushVal \"#b3b3b3\""
+    );
+    assert_eq!(
+        text("rgb(180, 60, 25, space = COLORSPACE_HSL)"),
+        "PushVal \"#196666\""
+    );
+    assert_eq!(
+        text("rgb(200, 80, 50, space = COLORSPACE_HSL)"),
+        "PushVal \"#19a2e6\""
+    );
+    assert_eq!(
+        text("rgb(0, 60, 25, space = COLORSPACE_HCY)"),
+        "PushVal \"#991919\""
+    );
+    assert_eq!(
+        ret(B515_1647, "rgb(330, 60, 75, space = COLORSPACE_HCY)"),
+        "PushVal \"#e6aac8\""
+    );
+    assert_eq!(
+        ret(B515_1647, "rgb(158, 53, 70, 64, COLORSPACE_HSV)"),
+        "PushVal \"#54b39040\""
+    );
+    // Before 515.1647 it's rounded in a way that isn't known: left to run
+    assert!(ret(B515_1637, "rgb(158, 53, 70, 64, COLORSPACE_HSV)").ends_with("RgbEx"));
+    assert!(ret(B515_1637, "rgb(0, 0, 70, space = COLORSPACE_HSV)").ends_with("RgbEx"));
+    assert_eq!(
+        ret(B515_1637, "rgb(0, 0, 71, space = COLORSPACE_HSV)"),
+        "PushVal \"#b5b5b5\""
     );
     // What isn't constant runs
     assert!(text("rgb(a, 2, 3)").ends_with("Rgb"));

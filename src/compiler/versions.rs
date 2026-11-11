@@ -113,22 +113,29 @@ pub(super) fn log(byond: ByondVersion, x: f32, base: f32) -> f32 {
 pub(super) const SINGLE_RADIANS: u32 = 1644;
 
 /// An angle from an inverse trig function, in degrees, as `byond`'s
-/// DreamMaker folds it.
-///
-/// From 515.1644 that's DreamMaker on Linux; on Windows it still works in
-/// double precision throughout, and the two are a single's last digit apart
-/// for some angles (`arctan(2)` is 63.43495 on Linux and 63.434948 on
-/// Windows). Each DreamDaemon does as its DreamMaker, and which built the
-/// world isn't known here: `None` where they differ, for the angle to be
-/// worked out when the proc runs.
-pub(super) fn degrees(byond: ByondVersion, radians: f64) -> Option<f64> {
-    let double = radians / (std::f64::consts::PI / 180.0);
-    if !byond.at_least(SINGLE_RADIANS) {
-        return Some(double);
+/// DreamMaker folds it on Linux.
+pub(super) fn degrees(byond: ByondVersion, radians: f64) -> f64 {
+    if byond.at_least(SINGLE_RADIANS) {
+        radians as f32 as f64 * 180.0 / std::f64::consts::PI
+    } else {
+        degrees_on_windows(radians)
     }
-    let single = radians as f32 as f64 * 180.0 / std::f64::consts::PI;
-    (single as f32 == double as f32).then_some(single)
 }
+
+/// The same as DreamMaker folds it on Windows, which works in double
+/// precision throughout on every build: a single's last digit apart from
+/// Linux's for some angles (`arctan(2)` is 63.43495 on Linux and 63.434948
+/// on Windows). Each DreamDaemon does as its DreamMaker.
+pub(super) fn degrees_on_windows(radians: f64) -> f64 {
+    radians / (std::f64::consts::PI / 180.0)
+}
+
+/// The first build whose DreamMaker on Linux is known to work out a folded
+/// colour's channels (`rgb()` of constants in the HSV, HSL or HCY space) as
+/// `fold::rgb_text` does. 515.1637 keeps other steps in single precision,
+/// which shows in a channel that's between two values, or nearly; the builds
+/// between weren't probed.
+pub(super) const LINUX_COLOURS: u32 = 1647;
 
 /// `sin(x)` or `cos(x)` of `x` degrees as `byond`'s DreamMaker folds it.
 /// From 516 the angle is first taken to [0, 360) and split into a quarter

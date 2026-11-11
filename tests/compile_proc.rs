@@ -1405,6 +1405,54 @@ fn a_folded_default_from_another_file_still_names_the_file_again() {
     );
 }
 
+/// DreamMaker on Windows folds some constants to another value than on Linux,
+/// and each DreamDaemon does as its DreamMaker. The compiler folds as Linux
+/// does, and says where Windows has, or may have, something else.
+#[test]
+fn a_fold_that_windows_has_differently_is_warned_about() {
+    let latest = dmasm::ByondVersion::LATEST;
+    let warnings =
+        |expr: &str, byond| warnings_for(&format!("/proc/f(a)\n\treturn {expr}\n"), byond);
+    let warned = |expr: &str, what: &str| {
+        let w = warnings(expr, latest);
+        assert!(w.len() == 1 && w[0].contains(what), "{expr}: {w:?}");
+    };
+    let quiet = |expr: &str, byond| {
+        let w = warnings(expr, byond);
+        assert!(w.is_empty(), "{expr} on {byond:?}: {w:?}");
+    };
+    // an angle a single's last digit apart
+    warned("arctan(2)", "arctan(2) is folded to 63.43495, as DreamMaker on Linux has it: on Windows DreamMaker and DreamDaemon make it 63.434948");
+    warned(
+        "arccos(0.7)",
+        "on Windows DreamMaker and DreamDaemon make it 45.572998",
+    );
+    warned("arctan(1, 2)", "arctan(1, 2) is folded to 63.43495");
+    warned("arctan(16777215)", "make it 90");
+    quiet("arctan(1)", latest);
+    quiet("arcsin(0.5)", latest);
+    quiet("arctan(a)", latest);
+    // (before 515.1644 Linux's was Windows')
+    quiet("arctan(2)", dmasm::ByondVersion::new(515, 1637));
+    // a colour with a channel right between two values
+    warned(
+        "rgb(0, 60, 25, space = COLORSPACE_HSV)",
+        "this rgb() is folded to #401919, as DreamMaker on Linux has it",
+    );
+    warned(
+        "rgb(h = 180, s = 60, l = 25)",
+        "DreamDaemon on Windows may round the other way",
+    );
+    quiet("rgb(0, 60, 26, space = COLORSPACE_HSV)", latest);
+    quiet("rgb(127.5, 2, 3)", latest);
+    quiet("rgb(0, 60, a, space = COLORSPACE_HSV)", latest);
+    // (left to run before 515.1647: nothing to say)
+    quiet(
+        "rgb(0, 60, 25, space = COLORSPACE_HSV)",
+        dmasm::ByondVersion::new(515, 1637),
+    );
+}
+
 /// The warnings for global proc f of `code`, compiled for `byond`
 fn warnings_for(code: &str, byond: dmasm::ByondVersion) -> Vec<String> {
     let ctx = dreammaker::Context::default();

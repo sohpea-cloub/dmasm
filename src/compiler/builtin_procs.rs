@@ -527,7 +527,14 @@ pub(super) fn rgb_constant(compiler: &Compiler<'_>, args: &[Expression]) -> Opti
             _ => return None,
         }),
     };
-    super::fold::rgb_text(compiler.byond, space as u32, channels, alpha)
+    let (text, boundary) = super::fold::rgb_text(compiler.byond, space as u32, channels, alpha)?;
+    if boundary {
+        compiler.warn(&format!(
+            "this rgb() is folded to {text}, as DreamMaker on Linux has it: one of its channels is right between \
+             two values, which DreamMaker and DreamDaemon on Windows may round the other way"
+        ));
+    }
+    Some(text)
 }
 
 /// rgb(r, g, b, a, space), positional or named. Rgb and Rgba are the plain RGB

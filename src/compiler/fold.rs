@@ -241,6 +241,17 @@ fn static_const(
     from_objtree(owner.get_value(names[names.len() - 1])?.constant.as_ref()?)
 }
 
+/// Says where an angle folded as DreamMaker on Linux does isn't the one
+/// DreamMaker on Windows folds it to (see `versions::degrees_on_windows`).
+fn warn_angle(c: &Compiler, what: &str, folded: f32, radians: f64) {
+    let windows = super::versions::degrees_on_windows(radians) as f32;
+    if windows != folded {
+        c.warn(&format!(
+            "{what} is folded to {folded}, as DreamMaker on Linux has it: on Windows DreamMaker and DreamDaemon make it {windows}"
+        ));
+    }
+}
+
 /// A one-argument math builtin of a constant, as DreamMaker folds it: `None`
 /// if `name` isn't one, `Some(None)` if the value is out of its domain.
 fn math1(name: &str, x: f32, byond: crate::ByondVersion) -> Option<Option<f32>> {
@@ -263,15 +274,9 @@ fn math1(name: &str, x: f32, byond: crate::ByondVersion) -> Option<Option<f32>> 
         }),
         "sin" | "cos" => Some(super::versions::sin_cos(byond, name == "sin", d)),
         "tan" => x.is_finite().then(|| super::versions::tan(byond, x) as f64),
-        "arcsin" => (-1.0..=1.0)
-            .contains(&d)
-            .then(|| degrees(d.asin()))
-            .flatten(),
-        "arccos" => (-1.0..=1.0)
-            .contains(&d)
-            .then(|| degrees(d.acos()))
-            .flatten(),
-        "arctan" => degrees(d.atan()),
+        "arcsin" => (-1.0..=1.0).contains(&d).then(|| degrees(d.asin())),
+        "arccos" => (-1.0..=1.0).contains(&d).then(|| degrees(d.acos())),
+        "arctan" => Some(degrees(d.atan())),
         _ => return None,
     };
     Some(r.map(|r| r as f32))
@@ -320,7 +325,19 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
                 && super::versions::folds(c.byond, name.as_str()) =>
         {
             match value(c, &args[0])? {
-                Constant::Number(n) => Constant::Number(math1(name.as_str(), n, c.byond)??),
+                Constant::Number(n) => {
+                    let folded = math1(name.as_str(), n, c.byond)??;
+                    let radians = match name.as_str() {
+                        "arcsin" => Some((n as f64).asin()),
+                        "arccos" => Some((n as f64).acos()),
+                        "arctan" => Some((n as f64).atan()),
+                        _ => None,
+                    };
+                    if let Some(radians) = radians {
+                        warn_angle(c, &format!("{name}({n})"), folded, radians);
+                    }
+                    Constant::Number(folded)
+                }
                 _ => return None,
             }
         }
@@ -342,9 +359,10 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
                 return Some(Constant::Number(0.0));
             }
             // (a y of -0 is 0 here: arctan(-1, -0) is 180, not -180)
-            Constant::Number(
-                super::versions::degrees(c.byond, (y as f64 + 0.0).atan2(x as f64))? as f32,
-            )
+            let radians = (y as f64 + 0.0).atan2(x as f64);
+            let folded = super::versions::degrees(c.byond, radians) as f32;
+            warn_angle(c, &format!("arctan({x}, {y})"), folded, radians);
+            Constant::Number(folded)
         }
         // isnan(1) and isinf(1) (see versions::clean_nan_fold)
         Term::Call(name, args)
@@ -720,21 +738,31 @@ pub(super) fn hcy_text(h: f32, c: f32, y: f32, nudge: f64) -> String {
     format!("#{}{}{}", byte(r), byte(g), byte(b))
 }
 
-/// `rgb()` of constants as DreamMaker folds it: `channels` in colour space
-/// `space` (0 RGB, 1 HSV, 2 HSL, 3 HCY), with `alpha` if one was given. RGB
-/// channels and the alpha are cut to whole numbers, the others' are rounded.
+/// `rgb()` of constants as DreamMaker on Linux folds it: `channels` in colour
+/// space `space` (0 RGB, 1 HSV, 2 HSL, 3 HCY), with `alpha` if one was given.
+/// RGB channels and the alpha are cut to whole numbers, the others' are
+/// rounded.
+///
+/// Where a channel is right between two values, or nearly, what it rounds to
+/// depends on who works it out: DreamMaker on Linux (from 515.1647, which
+/// this follows), 515.1637 and DreamMaker on Windows each mix single and
+/// double precision their own way, and each DreamDaemon rounds as its
+/// DreamMaker does. Such a colour is `None` before 515.1647 (left to run: how
+/// that build rounds isn't known), and from then on it's Linux's, with `true`
+/// to say Windows may have another.
 pub(super) fn rgb_text(
     byond: crate::ByondVersion,
     space: u32,
     channels: [f32; 3],
     alpha: Option<f32>,
-) -> Option<String> {
+) -> Option<(String, bool)> {
     let [a, b, c] = channels;
     let rounded = |nudge: f64| match space {
         1 => hsv_text(byond, a, b, c, nudge),
         2 => hsl_text(a, b, c, nudge),
         _ => hcy_text(a, b, c, nudge),
     };
+    let mut boundary = false;
     let mut text = match space {
         0 => format!(
             "#{}{}{}",
@@ -743,13 +771,8 @@ pub(super) fn rgb_text(
             hex_byte(c as f64)
         ),
         1..=3 => {
-            // Where a channel is right between two values, or nearly, what it
-            // rounds to depends on who works it out: DreamMaker on Linux
-            // (from 515.1647, which `rounded` follows), 515.1637 and
-            // DreamMaker on Windows each mix single and double precision
-            // their own way, and each DreamDaemon rounds as its DreamMaker
-            // does. Left to run, it's what the world's own build makes it.
-            if rounded(1e-3) != rounded(-1e-3) {
+            boundary = rounded(1e-3) != rounded(-1e-3);
+            if boundary && byond.build < super::versions::LINUX_COLOURS {
                 return None;
             }
             rounded(0.0)
@@ -759,7 +782,7 @@ pub(super) fn rgb_text(
     if let Some(alpha) = alpha {
         text += &hex_byte(alpha as f64);
     }
-    Some(text)
+    Some((text, boundary))
 }
 
 pub(super) fn hsl_text(h: f32, s: f32, l: f32, nudge: f64) -> String {
