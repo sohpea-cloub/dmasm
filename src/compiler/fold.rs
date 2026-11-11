@@ -329,7 +329,10 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
             if x == 0.0 && y == 0.0 {
                 return None;
             }
-            Constant::Number(super::versions::degrees(c.byond, (y as f64).atan2(x as f64)) as f32)
+            // (a y of -0 is 0 here: arctan(-1, -0) is 180, not -180)
+            Constant::Number(
+                super::versions::degrees(c.byond, (y as f64 + 0.0).atan2(x as f64)) as f32,
+            )
         }
         // isnan(1) and isinf(1) (see versions::clean_nan_fold)
         Term::Call(name, args)
