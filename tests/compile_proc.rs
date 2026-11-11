@@ -413,6 +413,29 @@ fn a_global_const_named_through_global_folds() {
     assert!(code("switch (a)\n\t\tif (global.gc)\n\t\t\treturn 1").contains("Switch default => "));
 }
 
+/// `new` for a var with `list` anywhere in its type makes a list.
+#[test]
+fn an_implicit_new_for_a_list_of_a_type() {
+    let code = compile(
+        "/datum/d/var/datum/d/list/dl\n/proc/f(datum/d/o)\n\tvar/datum/d/list/v = new\n\tvar/datum/d/list/w = new(3)\n\to.dl = new\n\treturn v\n",
+        "",
+        "f",
+    );
+    assert_has(&code, &["PushVal /list", "New 0", "SetVar local(0)"]);
+    assert_has(
+        &code,
+        &["PushVal /list", "PushInt 3", "New 1", "SetVar local(1)"],
+    );
+    assert_has(
+        &code,
+        &[
+            "PushVal /list",
+            "New 0",
+            "SetVar cache = arg(0); cache[\"dl\"]",
+        ],
+    );
+}
+
 /// Builtins on their own line that have forms of their own there.
 #[test]
 fn rarer_forms_of_builtins_on_their_own_line() {

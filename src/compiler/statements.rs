@@ -1202,7 +1202,8 @@ fn implicit_type_for(compiler: &Compiler, ty: &str) -> Option<String> {
     if ty.is_empty() {
         return None;
     }
-    if ty == "/list" || ty.starts_with("/list/") {
+    // (`list` anywhere in the path: `var/datum/d/list/x` is a list too)
+    if is_list_path(ty) {
         return Some("/list".to_owned());
     }
     compiler
@@ -1213,9 +1214,16 @@ fn implicit_type_for(compiler: &Compiler, ty: &str) -> Option<String> {
         .map(|t| t.get().path.clone())
 }
 
+/// Whether a var's declared type makes it a list: `list` is one of its parts.
+fn is_list_path(ty: &str) -> bool {
+    ty.split('/').any(|part| part == "list")
+}
+
 /// `/list` when the expression is a variable declared as a list.
 fn list_type_of(compiler: &Compiler, expr: &Expression) -> Option<String> {
-    super::procs::declared_type_path(compiler, expr).filter(|p| p == "/list")
+    super::procs::declared_type_path(compiler, expr)
+        .filter(|p| is_list_path(p))
+        .map(|_| "/list".to_owned())
 }
 
 fn find_loop(compiler: &mut Compiler, name: Option<&str>) -> Result<LoopLabels, CompileError> {
