@@ -340,6 +340,38 @@ fn safe_src_is_not_an_explicit_src_chain() {
 }
 
 #[test]
+fn a_logical_operator_folded_to_its_first_value_forgets_the_cache() {
+    let code = |value: &str| {
+        compile(
+            &format!("/datum/var/datum/m\n/datum/var/x\n/datum/var/y\n/proc/f(datum/a, b)\n\tif(a.m.x)\n\t\tvar/c = ({value})\n\t\treturn a.m.y\n"),
+            "",
+            "f",
+        )
+    };
+    // A plain value: the cache has a.m, and a.m.y is read from there
+    for kept in ["5", "\"s\"", "b"] {
+        assert_has(&code(kept), &["GetVar cache[\"y\"]", "Ret"]);
+    }
+    // A `&&` or `||`, and one that's folded away to its first value too: the
+    // cache is set again
+    for forgotten in [
+        "1 || b",
+        "\"s\" || b",
+        "\"\" && b",
+        "null && b",
+        "/datum || 1",
+    ] {
+        assert_has(
+            &code(forgotten),
+            &[
+                "GetVar cache = arg(0); cache = cache[\"m\"]; cache[\"y\"]",
+                "Ret",
+            ],
+        );
+    }
+}
+
+#[test]
 fn dropped_constant_forgets_cache() {
     // `0 || a.m` is `a.m`, but DreamMaker forgets what the cache held
     let code = compile(

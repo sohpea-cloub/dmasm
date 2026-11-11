@@ -209,6 +209,12 @@ pub(super) fn emit(
                     if c.truthy() == matches!(op, BinaryOp::Or) {
                         operands.truncate(i + 1);
                         forget.truncate(i + 1);
+                        // (a number that's all that's left forgets it as any
+                        // folded number does; text, null or a path has to be
+                        // told to: `"a" || x`, `null && x`)
+                        if i == 0 && !matches!(c, super::fold::Constant::Number(_)) {
+                            forget[0] = true;
+                        }
                     } else {
                         operands.remove(i);
                         forget.remove(i);
