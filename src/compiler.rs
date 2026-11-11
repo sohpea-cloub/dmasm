@@ -257,6 +257,7 @@ pub fn compile_expr_in(
     )));
 
     let ctx = dreammaker::Context::default();
+    byond.read_as(&ctx);
 
     let mut lexer =
         dreammaker::lexer::Lexer::new(&ctx, dreammaker::FileId::BUILTINS, code.as_bytes());
@@ -323,7 +324,7 @@ const BODY_FILE: &str = "<dmasm expression>";
 /// to the expression compiler, whose errors say why.
 pub fn is_body(code: &str) -> bool {
     use dreammaker::ast::Statement;
-    let Ok(tree) = parse_body(code) else {
+    let Ok(tree) = parse_body(code, ByondVersion::LATEST) else {
         return false;
     };
     match body_statements(&tree) {
@@ -348,7 +349,7 @@ pub fn compile_body_in(
 ) -> Result<CompiledBody, CompileError> {
     use dreammaker::ast::{BinaryOp, Statement};
 
-    let parsed = parse_body(code)?;
+    let parsed = parse_body(code, byond)?;
     let mut statements = body_statements(&parsed).to_vec();
     if let Some(last) = statements.last_mut() {
         if let Statement::Expr(expr) = &last.elem {
@@ -451,7 +452,10 @@ pub fn compile_body_in(
 
 /// Parses a debugger's code as the body of a global proc, `BODY_PROC`: one
 /// tab in from its header, after what all its lines start with is taken off
-fn parse_body(code: &str) -> Result<dreammaker::objtree::ObjectTree, CompileError> {
+fn parse_body(
+    code: &str,
+    byond: ByondVersion,
+) -> Result<dreammaker::objtree::ObjectTree, CompileError> {
     let lines: Vec<&str> = code.lines().collect();
     let indent = |line: &str| line.len() - line.trim_start_matches([' ', '\t']).len();
     let common = lines
@@ -471,6 +475,7 @@ fn parse_body(code: &str) -> Result<dreammaker::objtree::ObjectTree, CompileErro
     }
 
     let ctx = dreammaker::Context::default();
+    byond.read_as(&ctx);
     let pp = dreammaker::Preprocessor::from_buffer(&ctx, BODY_FILE.into(), text);
     let mut parser = dreammaker::Parser::new(&ctx, pp);
     parser.enable_procs();

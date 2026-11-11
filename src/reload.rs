@@ -531,6 +531,9 @@ impl Snapshot {
     /// Parses `dme` as DreamMaker would with `options`.
     pub fn parse(dme: &Path, options: &ParseOptions) -> Result<Snapshot, String> {
         let ctx = Context::default();
+        if let Some((major, build)) = options.byond {
+            ByondVersion::new(major, build).read_as(&ctx);
+        }
         let mut pp = dreammaker::Preprocessor::new(&ctx, dme.to_owned())
             .map_err(|e| format!("couldn't read {}: {}", dme.display(), e))?;
 
@@ -613,6 +616,7 @@ impl Snapshot {
         // The same files as before, so the same ids, which the macros' places
         // are given in
         let ctx = Context::default();
+        self.byond.read_as(&ctx);
         self.ctx.files().for_each(|path| {
             ctx.register_file(path);
         });

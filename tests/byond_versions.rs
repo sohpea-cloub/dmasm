@@ -13,6 +13,7 @@ const B516_1688: ByondVersion = ByondVersion::new(516, 1688);
 /// line, or the error.
 fn compile_for(byond: ByondVersion, code: &str) -> Result<String, String> {
     let ctx = dreammaker::Context::default();
+    byond.read_as(&ctx);
     let pp = dreammaker::Preprocessor::from_buffer(&ctx, "test.dm".into(), code.to_owned());
     let mut parser = dreammaker::Parser::new(&ctx, pp);
     parser.enable_procs();
@@ -219,6 +220,40 @@ fn text2ascii_char_of_a_constant_folds() {
         assert_eq!(ret(byond, "text2ascii_char(\"abc\")"), "PushInt 97");
         assert_eq!(ret(byond, "text2ascii_char(\"é\")"), "PushInt 233");
         assert_eq!(ret(byond, "text2ascii(\"é\")"), "PushInt 233");
+    }
+}
+
+/// Before 515.1644 an integer literal beyond 2147483647 is 2147483647.
+#[test]
+fn an_integer_literal_beyond_an_i32_before_515_1644() {
+    for byond in [B515_1637, ByondVersion::new(515, 1643)] {
+        assert_eq!(
+            ret(byond, "a + 3000000000"),
+            "GetVar arg(0)\nPushVal 2147483600\nAdd"
+        );
+        assert_eq!(
+            ret(byond, "a + 0xFFFFFFFF"),
+            "GetVar arg(0)\nPushVal 2147483600\nAdd"
+        );
+        assert_eq!(
+            ret(byond, "a + -3000000000"),
+            "GetVar arg(0)\nPushVal -2147483600\nAdd"
+        );
+        // written with a point or an exponent it's the number
+        assert_eq!(
+            ret(byond, "a + 3e9"),
+            "GetVar arg(0)\nPushVal 3000000000\nAdd"
+        );
+        assert_eq!(
+            ret(byond, "a + 3000000000.0"),
+            "GetVar arg(0)\nPushVal 3000000000\nAdd"
+        );
+    }
+    for byond in [ByondVersion::new(515, 1644), B515_1647, B516_1688] {
+        assert_eq!(
+            ret(byond, "a + 3000000000"),
+            "GetVar arg(0)\nPushVal 3000000000\nAdd"
+        );
     }
 }
 

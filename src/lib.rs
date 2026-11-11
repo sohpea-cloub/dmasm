@@ -46,6 +46,13 @@ impl ByondVersion {
     pub const fn at_least(self, build: u32) -> bool {
         self.build >= build
     }
+
+    /// Makes `ctx` read code as this build's DreamMaker does, where the
+    /// parser can: before 515.1644 an integer literal beyond 2147483647 is
+    /// 2147483647. For code that's parsed to be compiled for the build.
+    pub fn read_as(self, ctx: &dreammaker::Context) {
+        ctx.set_clamp_integer_literals(!self.at_least(1644));
+    }
 }
 
 impl Default for ByondVersion {

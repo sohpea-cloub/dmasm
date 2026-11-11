@@ -4,11 +4,6 @@ use dmasm::compiler::{compile_proc, ProcSource};
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let code = std::fs::read_to_string(&a[1]).unwrap();
-    let ctx = dreammaker::Context::default();
-    let pp = dreammaker::Preprocessor::from_buffer(&ctx, "test.dm".into(), code);
-    let mut parser = dreammaker::Parser::new(&ctx, pp);
-    parser.enable_procs();
-    let tree = parser.parse_object_tree();
     let byond = match std::env::var("BYOND") {
         Ok(v) => {
             let (major, build) = v.split_once('.').expect("BYOND=MAJOR.BUILD");
@@ -16,6 +11,12 @@ fn main() {
         }
         Err(_) => dmasm::ByondVersion::LATEST,
     };
+    let ctx = dreammaker::Context::default();
+    byond.read_as(&ctx);
+    let pp = dreammaker::Preprocessor::from_buffer(&ctx, "test.dm".into(), code);
+    let mut parser = dreammaker::Parser::new(&ctx, pp);
+    parser.enable_procs();
+    let tree = parser.parse_object_tree();
     let ty = if a[2].is_empty() {
         tree.root()
     } else {
@@ -42,4 +43,9 @@ fn main() {
     };
     let compiled = compile_proc(&source).expect("compiles");
     print!("{}", dmasm::format(&compiled.nodes));
+    if std::env::var("WARNINGS").is_ok() {
+        for w in &compiled.warnings {
+            println!("warning: {w}");
+        }
+    }
 }

@@ -50,6 +50,9 @@ forms) with each build's DreamMaker and comparing. Builds checked: 515.1637, 515
   `bound_pixloc`): there a call to one is a call to a global proc of that name, which a
   codebase may define. `alist()`, `for (k, v in list)` and (before 515.1644)
   `__PROC__` are refused for a build without them.
+- **Integer literals.** Before 515.1644 one beyond 2147483647 (`3000000000`, `0xFFFFFFFF`;
+  not `3e9` or `3000000000.0`) is 2147483647. The parser reads them so for those builds
+  (`ByondVersion::read_as`).
 - **Folded maths.** 515 converts degrees to radians as they are; 516 first takes the
   angle to [0, 360) and splits off whole quarter turns, so `sin(180)` is exactly 0. From
   515.1644 the radians from `arcsin`, `arccos` and
@@ -128,11 +131,8 @@ These are accepted as equivalent by the comparison:
   16777215, `-2147483904` 0 on 515 and 1 on 516). The compiler takes the low 24 bits of
   the nearest 32-bit integer, and warns (`CompiledProc::warnings`, a reload's warnings).
 
-- **An integer literal beyond 2147483647 on 515.1637.** That build reads one (`3000000000`,
-  `0xFFFFFFFF`; not `3e9` or `3000000000.0`) as 2147483647. The compiler has the number
-  written, as the later builds do. A hexadecimal literal of more than eight digits, or an
-  octal one beyond an i32, is something else again to DreamMaker (`0x100000000` is 2**60)
-  and an error here.
+- **Hexadecimal literals of more than eight digits, and octal ones beyond an i32.**
+  DreamMaker makes something else of them (`0x100000000` is 2**60); they're an error here.
 
 ## Warnings
 
