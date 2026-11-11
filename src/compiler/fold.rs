@@ -273,7 +273,12 @@ fn math1(name: &str, x: f32, byond: crate::ByondVersion) -> Option<Option<f32>> 
             0.0
         }),
         "sin" | "cos" => Some(super::versions::sin_cos(byond, name == "sin", d)),
-        "tan" => x.is_finite().then(|| super::versions::tan(byond, x) as f64),
+        // (of an infinity or a NaN it's NaN)
+        "tan" => Some(if x.is_finite() {
+            super::versions::tan(byond, x) as f64
+        } else {
+            f64::NAN
+        }),
         "arcsin" => (-1.0..=1.0).contains(&d).then(|| degrees(d.asin())),
         "arccos" => (-1.0..=1.0).contains(&d).then(|| degrees(d.acos())),
         "arctan" => Some(degrees(d.atan())),
@@ -573,6 +578,23 @@ fn binary_value(c: &Compiler, expr: &Expression) -> Option<Constant> {
                 (Constant::Text(mut a), Constant::Text(b)) if *op == BinaryOp::Add => {
                     a.extend(b);
                     Some(Constant::Text(a))
+                }
+                // Text or null shifted, or shifted by, is 0
+                (a, b)
+                    if matches!(op, BinaryOp::LShift | BinaryOp::RShift)
+                        && [&a, &b].iter().all(|v| {
+                            matches!(v, Constant::Number(_) | Constant::Text(_) | Constant::Null)
+                        }) =>
+                {
+                    let n = |v: &Constant| match v {
+                        Constant::Number(n) => *n,
+                        _ => 0.0,
+                    };
+                    numbers(*op, n(&a), n(&b)).map(Constant::Number)
+                }
+                // A number divided by text is the number
+                (Constant::Number(a), Constant::Text(_)) if *op == BinaryOp::Div => {
+                    Some(Constant::Number(a))
                 }
                 _ => None,
             }

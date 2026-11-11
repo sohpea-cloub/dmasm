@@ -355,6 +355,13 @@ fn folds_at_the_edges() {
         folds("(0 ** -1)", "PushVal inf");
         folds("(2 ** -1)", "PushVal 0.5");
         folds("arctan(0, 0)", "PushInt 0");
+        // text or null shifted, or shifted by, is 0; a number divided by
+        // text is the number
+        folds("(\"a\" << 2)", "PushInt 0");
+        folds("(null << 2)", "PushInt 0");
+        folds("(5 >> \"a\")", "PushInt 5");
+        folds("(5 / \"a\")", "PushInt 5");
+        folds("tan(1.#INF)", "PushVal NaN");
     }
     // (515 doesn't fold fract)
     assert_eq!(ret(B516_1688, "fract(1.#INF)"), "PushInt 0");
