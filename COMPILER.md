@@ -55,8 +55,16 @@ forms) with each build's DreamMaker and comparing. Builds checked: 515.1637, 515
   515.1644 the radians from `arcsin`, `arccos` and
   `arctan` are rounded to single precision before they're turned into degrees. `%%`
   folds as `fmod` in double precision. 515's `tan` folds in double precision; 516's
-  doesn't fit any simple model, so the compiler leaves `tan` of a constant to run there
-  (an encoding difference).
+  takes the angle to (-180, 180], splits off whole quarter turns, takes the tangent of
+  what's left measured from the nearer axis (so of at most 45 degrees) in double
+  precision, rounds it to single, and only then inverts and negates it. `arctan(x, y)`
+  takes a `y` of -0 as 0.
+- **Folded colours.** `rgb()` of constants is its text in every colour space. Red, green,
+  blue and alpha are cut to whole numbers; the channels worked out from HSV, HSL and HCY
+  are rounded half up. HSL's saturation and luminance are held to 0 to 100, HSV's only
+  from 516, and HCY's aren't; HCY weighs green 0.557 here (and 0.587 in `rgb2num`).
+  Before 515.1647 a channel on a half is rounded in another precision, so the compiler
+  leaves that colour to run there (an encoding difference).
 - **`isnan` and `isinf`** of a number fold from 516. Until 516.1669 (and in 516.1671) it folds only the
   test and still reads the flag (`PushInt 0; GetFlag`, which returns whatever the last
   test left: DreamMaker's bug, copied); 516.1670 and from 516.1672 it folds to a
