@@ -501,6 +501,28 @@ fn a_line_that_does_nothing() {
     );
 }
 
+/// `x * x` is a square however x is written.
+#[test]
+fn a_variable_times_itself_is_squared() {
+    let code = |expr: &str| compile(&format!("var/g\n/proc/f(a)\n\treturn {expr}\n"), "", "f");
+    assert_has(&code("a * (a)"), &["GetVar arg(0)", "PowSquare", "Ret"]);
+    assert_has(
+        &code("g * global.g"),
+        &["GetVar global(\"g\")", "PowSquare", "Ret"],
+    );
+    assert_has(
+        &code("global.g * g"),
+        &["GetVar global(\"g\")", "PowSquare", "Ret"],
+    );
+    // (a local of the name isn't the global)
+    let shadowed = compile(
+        "var/g\n/proc/f(a)\n\tvar/g = a\n\treturn g * global.g\n",
+        "",
+        "f",
+    );
+    assert!(!shadowed.contains("PowSquare"), "{}", shadowed);
+}
+
 /// What `pick()` gives a weight of 0 isn't one of its cases, and a switch's
 /// case of -0 is 0.
 #[test]

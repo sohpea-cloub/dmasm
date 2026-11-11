@@ -275,7 +275,10 @@ pub(super) fn emit(
 
         // x * x squares x
         BinaryOp::Mul
-            if compiler.proc.is_some() && !mul_lhs && lhs == rhs && is_plain_variable(&lhs) =>
+            if compiler.proc.is_some()
+                && !mul_lhs
+                && same_variable(compiler, &lhs) == same_variable(compiler, &rhs)
+                && is_plain_variable(&lhs) =>
         {
             let lhs = compiler.emit_expr(lhs)?;
             compiler.emit_move_to_stack(lhs)?;
@@ -405,6 +408,40 @@ pub(super) fn emit(
 
 /// Variables, fields and arithmetic on them: what DreamMaker squares when it's
 /// multiplied by itself (not calls or list elements).
+/// `expr` as `x * x` compares its sides: without parentheses around it, and
+/// `global.x` as the `x` it is where nothing else has the name.
+fn same_variable(compiler: &Compiler, expr: &Expression) -> Expression {
+    use dreammaker::ast::{Follow, Term};
+    let mut expr = expr;
+    while let Expression::Base { term, follow } = expr {
+        match &term.elem {
+            Term::Expr(inner) if follow.is_empty() => expr = inner,
+            _ => break,
+        }
+    }
+    if let Expression::Base { term, follow } = expr {
+        if let (Term::Ident(base), [first, rest @ ..]) = (&term.elem, &follow[..]) {
+            if let Follow::Field(_, name) = &first.elem {
+                // (the bare name is the global too)
+                let global = matches!(
+                    super::procs::find_var(compiler, name.as_str()),
+                    Some(EvalKind::Var(crate::operands::Variable::Global(g))) if g.scope.as_deref() == Some("")
+                );
+                if base.as_str() == "global" && global {
+                    return Expression::Base {
+                        term: Box::new(dreammaker::ast::Spanned::new(
+                            term.location,
+                            Term::Ident(name.clone()),
+                        )),
+                        follow: rest.to_vec().into_boxed_slice(),
+                    };
+                }
+            }
+        }
+    }
+    expr.clone()
+}
+
 fn is_plain_variable(expr: &Expression) -> bool {
     use dreammaker::ast::{Follow, Term, UnaryOp};
     match expr {
