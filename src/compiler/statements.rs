@@ -191,7 +191,10 @@ fn emit_condition(compiler: &mut Compiler, expr: &Expression) -> Result<(), Comp
     );
     emit_value(compiler, expr)?;
     compiler.condition_chain = false;
-    if let Some(Node::Instruction(Instruction::GetFlag, _)) = compiler.nodes.last() {
+    // (not what a `&&` or `||` folded to: see `fold::is_logic`)
+    if let (false, Some(Node::Instruction(Instruction::GetFlag, _))) =
+        (super::fold::is_logic(expr), compiler.nodes.last())
+    {
         compiler.nodes.pop();
         return Ok(());
     }

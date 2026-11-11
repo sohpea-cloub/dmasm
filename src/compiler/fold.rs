@@ -453,6 +453,24 @@ pub(super) fn has_logic(expr: &Expression) -> bool {
     }
 }
 
+/// Whether `expr` is a `&&` or a `||`, in parentheses or not. Where one
+/// folds to one of its sides (`0 || (a == b)`), DreamMaker takes that side
+/// as a value: a comparison's result is fetched and tested again, where a
+/// comparison written alone as a condition leaves its result in the flag.
+pub(super) fn is_logic(expr: &Expression) -> bool {
+    match expr {
+        Expression::BinaryOp {
+            op: BinaryOp::And | BinaryOp::Or,
+            ..
+        } => true,
+        Expression::Base { term, follow } if follow.is_empty() => match &term.elem {
+            Term::Expr(inner) => is_logic(inner),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Whether every argument is a constant (`k = v` too, a bare name for k).
 fn constant_args(c: &Compiler, args: &[Expression]) -> bool {
     args.iter().all(|arg| match arg {

@@ -13,10 +13,12 @@ pub(super) fn emit(
     rhs: Expression,
 ) -> Result<EvalKind, CompileError> {
     // Bring condition to stack
+    let logic = super::fold::is_logic(&condition);
     let condition = compiler.emit_expr(condition)?;
     compiler.emit_move_to_stack(condition)?;
-    // `==`, `in` and is*() leave their result in the test flag
-    if compiler.proc.is_some() {
+    // `==`, `in` and is*() leave their result in the test flag (but not as
+    // what a `&&` or `||` folded to: see `fold::is_logic`)
+    if compiler.proc.is_some() && !logic {
         if let Some(crate::Node::Instruction(Instruction::GetFlag, _)) = compiler.nodes.last() {
             compiler.nodes.pop();
             return emit_branches(compiler, lhs, rhs);

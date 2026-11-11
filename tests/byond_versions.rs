@@ -354,3 +354,35 @@ fn a_gradient_written_out_is_read_at_an_index() {
         "GetVar arg(0)\nGradient"
     );
 }
+
+#[test]
+fn a_comparison_a_logical_operator_folds_to_is_tested_as_a_value() {
+    let test = |condition: &str| {
+        compile_for(
+            B516_1688,
+            &format!("/proc/f(a, b)\n\tif ({condition})\n\t\treturn 1\n"),
+        )
+        .unwrap()
+    };
+    // Written alone, a comparison leaves its result in the flag
+    assert!(
+        test("a == b").contains("Teq\nPop\nJz"),
+        "{}",
+        test("a == b")
+    );
+    assert!(test("(a == b)").contains("Teq\nPop\nJz"));
+    // As what `0 || ...` or `1 && ...` comes to, it's fetched and tested
+    for condition in [
+        "0 || (a == b)",
+        "1 && (a == b)",
+        "(0 || a == b)",
+        "\"\" || (a == b)",
+    ] {
+        assert!(
+            test(condition).contains("Teq\nPop\nGetFlag\nTest\nJz"),
+            "{}: {}",
+            condition,
+            test(condition)
+        );
+    }
+}
