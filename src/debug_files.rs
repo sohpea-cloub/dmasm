@@ -1,0 +1,202 @@
+//! The names a world's debug info has for its source files.
+//!
+//! DreamMaker's `DbgFile` doesn't always name a file by its path from the
+//! `.dme`'s directory. What it writes (the same on Linux and Windows, from
+//! 515.1637 to 516.1688):
+//!
+//! - a file included by a `.dme`, the world's own or one it includes, has the
+//!   name it's included by, with forward slashes: `#include "tgs.dm"` in
+//!   `_std/__std.dme` makes `_std/tgs.dm` just `tgs.dm`;
+//! - a file included by any other file has that name after the directory of
+//!   its includer's name, as it is: `#include "..\b.dm"` in the file known as
+//!   `deep/e.dm` is `deep/../b.dm`;
+//! - the world's `.dme` itself has its whole path, as it was built.
+//!
+//! So a name alone doesn't say where its file is (goonstation's `map.dm` is
+//! `_std/map.dm`, not `code/map.dm`). `__FILE__` isn't like this: it's the
+//! path from the `.dme`'s directory.
+
+use std::collections::HashSet;
+use std::path::{Component, Path, PathBuf};
+
+/// The code files `dme` includes, in the order DreamMaker reads them: each
+/// one's name in the world's debug info, and its path from `dme`'s directory
+/// (without `.` and `..`). `dme` itself isn't among them.
+///
+/// The files are found by their `#include` lines alone, whatever `#if` they
+/// are in, so there may be more than a build has: `keep` says which paths to
+/// take (and look into), for a caller that knows what was read.
+pub fn names(dme: &Path, keep: &dyn Fn(&Path) -> bool) -> Vec<(String, PathBuf)> {
+    let root = dme.parent().unwrap_or(Path::new(""));
+    let mut found = vec![];
+    let mut seen = HashSet::new();
+    if let Some(file) = dme.file_name() {
+        seen.insert(PathBuf::from(file));
+        scan(root, Path::new(file), "", keep, &mut seen, &mut found);
+    }
+    found
+}
+
+/// A path without its `.` and its `name/..` parts, as it's written
+pub fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) =>
+            {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn scan(
+    root: &Path,
+    file: &Path,
+    prefix: &str,
+    keep: &dyn Fn(&Path) -> bool,
+    seen: &mut HashSet<PathBuf>,
+    found: &mut Vec<(String, PathBuf)>,
+) {
+    let Ok(text) = std::fs::read(root.join(file)) else {
+        return;
+    };
+    let text = String::from_utf8_lossy(&text);
+    let directory = file.parent().unwrap_or(Path::new(""));
+    for line in text.lines() {
+        let Some(included) = included(line) else {
+            continue;
+        };
+        let included = included.replace('\\', "/");
+        let lower = included.to_ascii_lowercase();
+        let environment = lower.ends_with(".dme");
+        if !environment && !lower.ends_with(".dm") {
+            continue;
+        }
+        let path = normalize(&directory.join(&included));
+        if !keep(&path) || !root.join(&path).is_file() || !seen.insert(path.clone()) {
+            continue;
+        }
+        let name = format!("{prefix}{included}");
+        // What a file includes is named from where its own name is, but for
+        // an environment's, which start over
+        let inner = match name.rfind('/') {
+            Some(slash) if !environment => name[..=slash].to_owned(),
+            _ => String::new(),
+        };
+        found.push((name, path.clone()));
+        scan(root, &path, &inner, keep, seen, found);
+    }
+}
+
+/// The file an `#include "file"` line names
+fn included(line: &str) -> Option<&str> {
+    let rest = line
+        .trim_start()
+        .strip_prefix('#')?
+        .trim_start()
+        .strip_prefix("include")?;
+    let rest = rest.trim_start().strip_prefix('"')?;
+    Some(&rest[..rest.find('"')?])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn include_lines() {
+        assert_eq!(
+            included("#include \"code\\a.dm\" // first"),
+            Some("code\\a.dm")
+        );
+        assert_eq!(included("  # include \"a.dm\""), Some("a.dm"));
+        assert_eq!(included("#include <lib/lib.dme>"), None);
+        assert_eq!(included("// #include \"a.dm\""), None);
+        assert_eq!(included("#define A \"a.dm\""), None);
+    }
+
+    #[test]
+    fn paths_without_dots() {
+        assert_eq!(
+            normalize(Path::new("sub/deep/../b.dm")),
+            Path::new("sub/b.dm")
+        );
+        assert_eq!(normalize(Path::new("./a/./b.dm")), Path::new("a/b.dm"));
+        assert_eq!(normalize(Path::new("../a.dm")), Path::new("../a.dm"));
+        assert_eq!(normalize(Path::new("a/../../b.dm")), Path::new("../b.dm"));
+    }
+
+    /// The names DreamMaker 516.1688 and 515.1637 gave this tree's files
+    #[test]
+    fn names_as_dream_maker_has_them() {
+        let dir = std::env::temp_dir().join(format!("dmasm-debug-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let write = |path: &str, text: &str| {
+            let path = dir.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write(
+            "t.dme",
+            "#include \"sub\\a.dme\"\n#include \"top.dm\"\n#include \"other/o.dm\"\n#include \"sub2/f.dm\"\n\
+             #include \"gone.dm\"\n#include \"map.dmm\"\n#include \"top.dm\"\n",
+        );
+        write(
+            "sub/a.dme",
+            "#include \"b.dm\"\n#include \"x\\c.dm\"\n#include \"../other/d.dm\"\n#include \"deep/e.dm\"\n#include \"x/h.dme\"\n",
+        );
+        write("sub/b.dm", "");
+        write("sub/x/c.dm", "#include \"c2.dm\"\n");
+        write("sub/x/c2.dm", "");
+        write("other/d.dm", "");
+        write(
+            "sub/deep/e.dm",
+            "#include \"..\\b2.dm\"\n#include \"../../other/o2.dm\"\n",
+        );
+        write("sub/b2.dm", "");
+        write("other/o2.dm", "");
+        write("sub/x/h.dme", "#include \"c3.dm\"\n");
+        write("sub/x/c3.dm", "");
+        write("top.dm", "");
+        write("other/o.dm", "");
+        write("sub2/f.dm", "#include \"g.dm\"\n");
+        write("sub2/g.dm", "");
+        write("map.dmm", "");
+
+        let all = names(&dir.join("t.dme"), &|_| true);
+        let all: Vec<(&str, &str)> = all
+            .iter()
+            .map(|(name, path)| (name.as_str(), path.to_str().unwrap()))
+            .collect();
+        assert_eq!(
+            all,
+            [
+                ("sub/a.dme", "sub/a.dme"),
+                ("b.dm", "sub/b.dm"),
+                ("x/c.dm", "sub/x/c.dm"),
+                ("x/c2.dm", "sub/x/c2.dm"),
+                ("../other/d.dm", "other/d.dm"),
+                ("deep/e.dm", "sub/deep/e.dm"),
+                ("deep/../b2.dm", "sub/b2.dm"),
+                ("deep/../../other/o2.dm", "other/o2.dm"),
+                ("x/h.dme", "sub/x/h.dme"),
+                ("c3.dm", "sub/x/c3.dm"),
+                ("top.dm", "top.dm"),
+                ("other/o.dm", "other/o.dm"),
+                ("sub2/f.dm", "sub2/f.dm"),
+                ("sub2/g.dm", "sub2/g.dm"),
+            ]
+        );
+
+        // Only what a build read
+        let some = names(&dir.join("t.dme"), &|path| !path.starts_with("sub"));
+        let some: Vec<&str> = some.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(some, ["top.dm", "other/o.dm", "sub2/f.dm", "sub2/g.dm"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
