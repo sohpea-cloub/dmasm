@@ -560,6 +560,26 @@ fn a_pick_of_weight_0_and_a_case_of_minus_0() {
     assert_eq!(table.matches("=>").count(), 2, "{}", table);
     assert!(table.contains("21845 =>"), "{}", table);
     assert!(code.contains("GetVar arg(1)"), "{}", code);
+    // a last entry of weight 0 is never drawn (DreamMaker's table has the
+    // draw go nowhere there, which is warned about)
+    let source = "/proc/f(a, b)\n\treturn pick(1; a, 0; b)\n";
+    let code = compile(source, "", "f");
+    let table = code.lines().find(|l| l.starts_with("PickSwitch")).unwrap();
+    assert_eq!(table.matches("=>").count(), 1, "{}", table);
+    let target = table
+        .split("default => ")
+        .nth(1)
+        .unwrap()
+        .trim_end_matches([',', ' ']);
+    assert_has(&code, &[&format!("{target}:"), "GetVar arg(0)"]);
+    let warnings = warnings_for(source, dmasm::ByondVersion::LATEST);
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("last entry of weight 0")),
+        "{:?}",
+        warnings
+    );
     let code = compile(
         "/proc/f(a)\n\tswitch (a)\n\t\tif (-0)\n\t\t\treturn 1\n\treturn 2\n",
         "",

@@ -397,8 +397,21 @@ pub(super) fn emit(compiler: &mut Compiler<'_>, term: Term) -> Result<EvalKind, 
                                 .is_some_and(|w| super::fold::number(compiler, w) == Some(0.0))
                         })
                         .collect();
-                    for ((weight, label), zero) in
-                        weights.iter().zip(&labels).zip(zero).take(args.len() - 1)
+                    // The last entry is where the draw goes when no case has
+                    // it. With a weight of 0 itself, DreamMaker's table sends
+                    // that to no code at all (the world crashes); here the
+                    // last entry that has a weight gets it instead.
+                    let mut last = args.len() - 1;
+                    if zero[last] {
+                        if let Some(live) = zero.iter().rposition(|z| !z) {
+                            compiler.warn(
+                                "pick() with a last entry of weight 0: DreamMaker's code for it jumps out of the proc \
+                                 when no earlier entry is drawn (a crash); dmasm draws the last entry that has a weight",
+                            );
+                            last = live;
+                        }
+                    }
+                    for ((weight, label), zero) in weights.iter().zip(&labels).zip(zero).take(last)
                     {
                         if zero {
                             continue;
@@ -407,7 +420,7 @@ pub(super) fn emit(compiler: &mut Compiler<'_>, term: Term) -> Result<EvalKind, 
                         cases.push((threshold, Label::Named(label.clone())));
                     }
                     compiler.emit_ins(Instruction::PickSwitch(crate::PickSwitchParams {
-                        default: Label::Named(labels.last().unwrap().clone()),
+                        default: Label::Named(labels[last].clone()),
                         cases,
                     }));
                     let count = args.len();

@@ -153,7 +153,9 @@ DreamMaker quirk that changes what the code does:
   written without spaces), a proc called through `?.` whose arguments use the cache,
   `?.` in `||=`/`&&=` before 516.1673, `*p[i] = x` from 516.1668 (DreamMaker leaves the
   index out; the compiler writes the element), a constant beyond 32 bits at a bit
-  operator, and an angle or a colour folded as DreamMaker on Linux does where Windows
+  operator, `pick()` with a last entry of weight 0 (DreamMaker's code crashes when no
+  earlier entry is drawn; the compiler's draws the last entry with a weight), and an
+  angle or a colour folded as DreamMaker on Linux does where Windows
   has, or may have, another (`arctan(2)`, a colour with a channel right between two
   values);
 - quirks copied: `isnan()`/`isinf()` of a known number where the build gives the last
