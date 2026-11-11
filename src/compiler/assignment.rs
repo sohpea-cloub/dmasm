@@ -490,6 +490,9 @@ fn emit_proc_assignment(
             } else {
                 Instruction::JmpAnd(Label::Named(end.clone()))
             });
+            // (a chain through fields the test loaded isn't reused by the
+            // value, and the assignment writes it out in full)
+            compiler.end_assignment_statement();
             let start = compiler.nodes.len();
             compiler.implicit_type = compiler.static_type_name(lhs);
             let kind = compiler.emit_expr(rhs.clone())?;

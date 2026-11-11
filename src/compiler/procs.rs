@@ -1031,7 +1031,9 @@ pub(super) fn track_cache(
             | CallSelfArgList
             | Del
             | Sleep
-    ) || matches!(ins, Call(v, _) | CallStatement(v, _) if !uses_cache(v));
+    ) || matches!(ins, Call(v, _) | CallStatement(v, _) if !uses_cache(v))
+        // (and after `a.b.c++` or `a.b.c += v` as a value)
+        || matches!(ins, PreInc(_) | PostInc(_) | PreDec(_) | PostDec(_) | PushEval);
     if call && cache.as_ref().is_some_and(|held| held.len() > 1) {
         *cache = None;
     }

@@ -413,6 +413,46 @@ fn a_global_const_named_through_global_folds() {
     assert!(code("switch (a)\n\t\tif (global.gc)\n\t\t\treturn 1").contains("Switch default => "));
 }
 
+/// As a value, `a.m.x++`, `a.m.x += v` and `a.m.x ||= v` leave nothing of the
+/// chain through fields for what comes after.
+#[test]
+fn a_chain_through_fields_isnt_reused_after_a_change_as_a_value() {
+    let code = |body: &str| {
+        compile(
+            &format!("/datum/var/datum/m\n/datum/var/x\n/proc/f(datum/a, b)\n\t{body}\n"),
+            "",
+            "f",
+        )
+    };
+    let whole = "cache = arg(0); cache = cache[\"m\"]; cache[\"x\"]";
+    assert_has(
+        &code("return a.m.x++ + a.m.x"),
+        &[
+            &format!("PostInc {whole}"),
+            &format!("GetVar {whole}"),
+            "Add",
+        ],
+    );
+    assert_has(
+        &code("return (a.m.x += b) + a.m.x"),
+        &["PushEval", &format!("GetVar {whole}"), "Add"],
+    );
+    assert_has(
+        &code("return (a.m.x ||= b)"),
+        &[
+            &format!("GetVar {whole}"),
+            "JmpOr LAB_0002",
+            "GetVar arg(1)",
+            &format!("SetVarExpr {whole}"),
+        ],
+    );
+    // a plain assignment as a value does reuse it
+    assert_has(
+        &code("return a.m.x + (a.m.x = b)"),
+        &["GetVar arg(1)", "SetVarExpr cache[\"x\"]", "Add"],
+    );
+}
+
 /// DreamMaker writes the field of `x.f ||= v` the way it read it for the test.
 #[test]
 fn a_logical_assignment_writes_its_field_as_it_read_it() {
