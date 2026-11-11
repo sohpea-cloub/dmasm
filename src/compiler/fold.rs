@@ -243,11 +243,13 @@ fn static_const(
 
 /// Says where an angle folded as DreamMaker on Linux does isn't the one
 /// DreamMaker on Windows folds it to (see `versions::degrees_on_windows`).
+/// Linux's is also what DreamDaemon makes of it at run time, on both.
 fn warn_angle(c: &Compiler, what: &str, folded: f32, radians: f64) {
     let windows = super::versions::degrees_on_windows(radians) as f32;
     if windows != folded {
         c.warn(&format!(
-            "{what} is folded to {folded}, as DreamMaker on Linux has it: on Windows DreamMaker and DreamDaemon make it {windows}"
+            "{what} is folded to {folded}, as DreamMaker on Linux has it and as it is when worked out at run time: \
+             DreamMaker on Windows folds it to {windows}, which is what a world built there has"
         ));
     }
 }

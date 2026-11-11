@@ -125,7 +125,7 @@ pub(super) fn degrees(byond: ByondVersion, radians: f64) -> f64 {
 /// The same as DreamMaker folds it on Windows, which works in double
 /// precision throughout on every build: a single's last digit apart from
 /// Linux's for some angles (`arctan(2)` is 63.43495 on Linux and 63.434948
-/// on Windows). Each DreamDaemon does as its DreamMaker.
+/// on Windows). At run time DreamDaemon makes it Linux's, on Windows too.
 pub(super) fn degrees_on_windows(radians: f64) -> f64 {
     radians / (std::f64::consts::PI / 180.0)
 }

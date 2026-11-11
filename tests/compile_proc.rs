@@ -1532,13 +1532,11 @@ fn a_fold_that_windows_has_differently_is_warned_about() {
         assert!(w.is_empty(), "{expr} on {byond:?}: {w:?}");
     };
     // an angle a single's last digit apart
-    warned("arctan(2)", "arctan(2) is folded to 63.43495, as DreamMaker on Linux has it: on Windows DreamMaker and DreamDaemon make it 63.434948");
-    warned(
-        "arccos(0.7)",
-        "on Windows DreamMaker and DreamDaemon make it 45.572998",
-    );
+    warned("arctan(2)", "arctan(2) is folded to 63.43495, as DreamMaker on Linux has it and as it is when worked out at run time");
+    warned("arctan(2)", "DreamMaker on Windows folds it to 63.434948");
+    warned("arccos(0.7)", "DreamMaker on Windows folds it to 45.572998");
     warned("arctan(1, 2)", "arctan(1, 2) is folded to 63.43495");
-    warned("arctan(16777215)", "make it 90");
+    warned("arctan(16777215)", "folds it to 90,");
     quiet("arctan(1)", latest);
     quiet("arcsin(0.5)", latest);
     quiet("arctan(a)", latest);
