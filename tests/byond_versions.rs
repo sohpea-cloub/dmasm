@@ -276,3 +276,58 @@ fn proc_macro_in_call_before_515_1644() {
     assert_eq!(ret(b, "nameof(__PROC__)"), "PushVal \"f\"");
     assert!(compile_for(b, "/proc/f(a)\n\treturn __PROC__\n").is_err());
 }
+
+#[test]
+fn a_colour_of_constants_is_its_text_in_any_colour_space() {
+    let text = |expr: &str| ret(B516_1688, expr);
+    // RGB channels and the alpha are cut to whole numbers
+    assert_eq!(text("rgb(1.9, 2.5, 300, 127.9)"), "PushVal \"#0102ff7f\"");
+    assert_eq!(
+        text("rgb(120, 100, 50, space = COLORSPACE_RGB)"),
+        "PushVal \"#786432\""
+    );
+    // an alpha that's null (or text) is 0
+    assert_eq!(text("rgb(1, 2, 3, null)"), "PushVal \"#01020300\"");
+    assert_eq!(
+        text("rgb(h = 120, s = 100, v = 50, a = null)"),
+        "PushVal \"#00800000\""
+    );
+    // HSV and HSL keep their saturation and the rest to [0, 100]
+    assert_eq!(text("rgb(h = 120, s = 100, v = 50)"), "PushVal \"#008000\"");
+    assert_eq!(
+        text("rgb(359, 50, 50, 200, COLORSPACE_HSV)"),
+        "PushVal \"#804041c8\""
+    );
+    assert_eq!(text("rgb(h = -30, s = 150, v = 50)"), "PushVal \"#800040\"");
+    assert_eq!(text("rgb(l = 13, h = 351, s = 180)"), "PushVal \"#42000a\"");
+    // HCY doesn't, and its green weighs 0.557
+    assert_eq!(text("rgb(h = 120, c = 100, y = 50)"), "PushVal \"#00e500\"");
+    assert_eq!(
+        text("rgb(50, 300, 92, space = COLORSPACE_HCY)"),
+        "PushVal \"#fffd25\""
+    );
+    assert_eq!(text("rgb(h = -27, y = -5, c = 255)"), "PushVal \"#001400\"");
+    // and it's a constant where it's used
+    assert_eq!(
+        text("rgb(h = 120, s = 100, l = 50) + \"x\""),
+        "PushVal \"#00ff00x\""
+    );
+    // 515 works with an HSV saturation beyond 100 as it is
+    assert_eq!(
+        ret(B515_1647, "rgb(h = 90, s = 100.4, v = 50)"),
+        "PushVal \"#3f8000\""
+    );
+    assert_eq!(
+        ret(B516_1659, "rgb(h = 90, s = 100.4, v = 50)"),
+        "PushVal \"#408000\""
+    );
+    // Before 515.1647 a channel right between two values is left to run
+    assert!(ret(B515_1637, "rgb(158, 53, 70, 64, COLORSPACE_HSV)").ends_with("RgbEx"));
+    assert_eq!(
+        ret(B515_1647, "rgb(158, 53, 70, 64, COLORSPACE_HSV)"),
+        "PushVal \"#54b39040\""
+    );
+    // What isn't constant runs
+    assert!(text("rgb(a, 2, 3)").ends_with("Rgb"));
+    assert!(text("rgb(h = a, s = 2, v = 3)").ends_with("RgbEx"));
+}

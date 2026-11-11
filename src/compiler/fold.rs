@@ -353,6 +353,10 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
             }
             Constant::Text(name.into_bytes())
         }
+        // rgb() of constants is its "#rrggbb" text, in any colour space
+        Term::Call(name, args) if name.as_str() == "rgb" => {
+            Constant::Text(super::builtin_procs::rgb_constant(c, args)?.into_bytes())
+        }
         // hsl2rgb(h, s, l), the builtin
         Term::Call(name, args)
             if name.as_str() == "hsl2rgb"
@@ -366,7 +370,7 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
                 Constant::Number(n) => Some(n),
                 _ => None,
             };
-            Constant::Text(hsl_text(n(&args[0])?, n(&args[1])?, n(&args[2])?).into_bytes())
+            Constant::Text(hsl_text(n(&args[0])?, n(&args[1])?, n(&args[2])?, 0.0).into_bytes())
         }
         // text2ascii("a") is 97, and of "" 0
         Term::Call(name, args) if name.as_str() == "text2ascii" && args.len() == 1 => {
@@ -568,8 +572,117 @@ fn numbers(op: BinaryOp, a: f32, b: f32) -> Option<f32> {
 /// The "#rrggbb" of a color given as hue (degrees), saturation and luminance
 /// (percent), as DreamMaker works out `hsl2rgb()` or `rgb(h, s, l, space = 2)`
 /// (channels rounded).
-pub(super) fn hsl_text(h: f32, s: f32, l: f32) -> String {
-    let (h, s, l) = (h as f64, s as f64 / 100.0, l as f64 / 100.0);
+/// A colour component as the two hex digits `rgb()` writes
+fn hex_byte(v: f64) -> String {
+    format!("{:02x}", v.clamp(0.0, 255.0) as u8)
+}
+
+/// `rgb(h, s, v)` of constants in the HSV colour space, as DreamMaker folds
+/// it: the hue turned into [0, 360), the others kept to [0, 100] (from 516),
+/// and each channel rounded.
+pub(super) fn hsv_text(byond: crate::ByondVersion, h: f32, s: f32, v: f32, nudge: f64) -> String {
+    // (515 works with a saturation or a value outside [0, 100] as it is)
+    let range = if byond.at_least(super::versions::BYOND_516) {
+        (0.0, 100.0)
+    } else {
+        (f64::MIN, f64::MAX)
+    };
+    let (h, s, v) = (
+        h as f64,
+        (s as f64).clamp(range.0, range.1) / 100.0,
+        (v as f64).clamp(range.0, range.1) / 100.0,
+    );
+    let chroma = v * s;
+    let h6 = h.rem_euclid(360.0) / 60.0;
+    let x = chroma * (1.0 - (h6 % 2.0 - 1.0).abs());
+    let (r, g, b) = match h6 as u32 {
+        0 => (chroma, x, 0.0),
+        1 => (x, chroma, 0.0),
+        2 => (0.0, chroma, x),
+        3 => (0.0, x, chroma),
+        4 => (x, 0.0, chroma),
+        _ => (chroma, 0.0, x),
+    };
+    let m = v - chroma;
+    let byte = |c: f64| hex_byte(((c + m) * 255.0 + 0.5 + nudge).floor());
+    format!("#{}{}{}", byte(r), byte(g), byte(b))
+}
+
+/// `rgb(h, c, y)` of constants in the HCY colour space, as DreamMaker folds
+/// it. The chroma is a share of the most the hue can have at that
+/// luminance, and the luminance weighs green as 0.557 (red 0.299, blue
+/// 0.114: they don't add up to 1, and that's BYOND's). A chroma or a
+/// luminance outside [0, 100] is worked with as it is.
+pub(super) fn hcy_text(h: f32, c: f32, y: f32, nudge: f64) -> String {
+    // (neither is kept to [0, 100]: only the channels they give are)
+    let (h, c, y) = (h as f64, c as f64 / 100.0, y as f64 / 100.0);
+    let h6 = h.rem_euclid(360.0) / 60.0;
+    let k = 1.0 - (h6 % 2.0 - 1.0).abs();
+    let (r, g, b) = match h6 as u32 {
+        0 => (1.0, k, 0.0),
+        1 => (k, 1.0, 0.0),
+        2 => (0.0, 1.0, k),
+        3 => (0.0, k, 1.0),
+        4 => (k, 0.0, 1.0),
+        _ => (1.0, 0.0, k),
+    };
+    let weight = 0.299 * r + 0.557 * g + 0.114 * b;
+    let chroma = if y < weight {
+        c * y / weight
+    } else if weight < 1.0 {
+        c * (1.0 - y) / (1.0 - weight)
+    } else {
+        0.0
+    };
+    let m = y - weight * chroma;
+    let byte = |v: f64| hex_byte(((v * chroma + m) * 255.0 + 0.5 + nudge).floor());
+    format!("#{}{}{}", byte(r), byte(g), byte(b))
+}
+
+/// `rgb()` of constants as DreamMaker folds it: `channels` in colour space
+/// `space` (0 RGB, 1 HSV, 2 HSL, 3 HCY), with `alpha` if one was given. RGB
+/// channels and the alpha are cut to whole numbers, the others' are rounded.
+pub(super) fn rgb_text(
+    byond: crate::ByondVersion,
+    space: u32,
+    channels: [f32; 3],
+    alpha: Option<f32>,
+) -> Option<String> {
+    let [a, b, c] = channels;
+    let rounded = |nudge: f64| match space {
+        1 => hsv_text(byond, a, b, c, nudge),
+        2 => hsl_text(a, b, c, nudge),
+        _ => hcy_text(a, b, c, nudge),
+    };
+    let mut text = match space {
+        0 => format!(
+            "#{}{}{}",
+            hex_byte(a as f64),
+            hex_byte(b as f64),
+            hex_byte(c as f64)
+        ),
+        1..=3 => {
+            // Builds before 515.1647 round in another precision, which shows
+            // where a channel is right between two values: left to run there
+            if byond.build < super::versions::DOUBLE_COLOURS && rounded(1e-7) != rounded(-1e-7) {
+                return None;
+            }
+            rounded(0.0)
+        }
+        _ => return None,
+    };
+    if let Some(alpha) = alpha {
+        text += &hex_byte(alpha as f64);
+    }
+    Some(text)
+}
+
+pub(super) fn hsl_text(h: f32, s: f32, l: f32, nudge: f64) -> String {
+    let (h, s, l) = (
+        h as f64,
+        (s as f64).clamp(0.0, 100.0) / 100.0,
+        (l as f64).clamp(0.0, 100.0) / 100.0,
+    );
     let chroma = (1.0 - (2.0 * l - 1.0).abs()) * s;
     let h6 = h.rem_euclid(360.0) / 60.0;
     let x = chroma * (1.0 - (h6 % 2.0 - 1.0).abs());
@@ -582,6 +695,6 @@ pub(super) fn hsl_text(h: f32, s: f32, l: f32) -> String {
         _ => (chroma, 0.0, x),
     };
     let m = l - chroma / 2.0;
-    let byte = |v: f64| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
-    format!("#{:02x}{:02x}{:02x}", byte(r), byte(g), byte(b))
+    let byte = |v: f64| hex_byte(((v + m) * 255.0 + 0.5 + nudge).floor());
+    format!("#{}{}{}", byte(r), byte(g), byte(b))
 }

@@ -458,12 +458,10 @@ pub(super) fn emit(
     }
 }
 
-/// rgb(r, g, b, a, space), positional or named. Rgb and Rgba are the plain RGB
-/// forms; any other color space needs RgbEx with all five.
-fn emit_rgb(
-    compiler: &mut Compiler<'_>,
-    args: &[Expression],
-) -> Result<Option<EvalKind>, CompileError> {
+/// The arguments of rgb(r, g, b, a, space), positional or named, in that
+/// order, and the colour space the names say (h with v, l or y), if they do.
+/// `None` if they aren't rgb()'s.
+fn rgb_slots(args: &[Expression]) -> Option<([Option<Expression>; 5], Option<f32>)> {
     let mut slots: [Option<Expression>; 5] = Default::default();
     let mut names = Vec::new();
     for (i, arg) in args.iter().enumerate() {
@@ -473,26 +471,24 @@ fn emit_rgb(
                 lhs,
                 rhs,
             } => {
-                let Some(name) = ident_name(lhs) else {
-                    return Ok(None);
-                };
+                let name = ident_name(lhs)?;
                 let slot = match name.as_str() {
                     "r" | "red" | "h" | "hue" => 0,
                     "g" | "green" | "s" | "saturation" | "c" | "chroma" => 1,
                     "b" | "blue" | "v" | "value" | "l" | "luminance" | "y" => 2,
                     "a" | "alpha" => 3,
                     "space" => 4,
-                    _ => return Ok(None),
+                    _ => return None,
                 };
                 names.push(name);
                 slots[slot] = Some((**rhs).clone());
             }
             _ if i < 5 && names.is_empty() => slots[i] = Some(arg.clone()),
-            _ => return Ok(None),
+            _ => return None,
         }
     }
     if slots[..3].iter().any(Option::is_none) {
-        return Ok(None);
+        return None;
     }
     let has = |n: &str| names.iter().any(|x| x == n);
     let space = if has("h") || has("hue") {
@@ -506,41 +502,52 @@ fn emit_rgb(
     } else {
         None
     };
+    Some((slots, space))
+}
+
+/// rgb() of constants: the "#rrggbb" or "#rrggbbaa" text DreamMaker stores
+/// for it, whatever the colour space. An alpha that's a constant but not a
+/// number (null, text) is 0.
+pub(super) fn rgb_constant(compiler: &Compiler<'_>, args: &[Expression]) -> Option<String> {
+    let ([r, g, b, a, sp], named_space) = rgb_slots(args)?;
+    let space = match (named_space, &sp) {
+        (Some(space), _) => space,
+        (None, Some(sp)) => super::fold::number(compiler, sp)?,
+        (None, None) => 0.0,
+    };
+    if space.fract() != 0.0 || !(0.0..=3.0).contains(&space) {
+        return None;
+    }
+    let number = |e: &Option<Expression>| super::fold::number(compiler, e.as_ref()?);
+    let channels = [number(&r)?, number(&g)?, number(&b)?];
+    let alpha = match &a {
+        None => None,
+        Some(a) => Some(match super::fold::value(compiler, a)? {
+            super::fold::Constant::Number(n) => n,
+            super::fold::Constant::Null | super::fold::Constant::Text(_) => 0.0,
+            _ => return None,
+        }),
+    };
+    super::fold::rgb_text(compiler.byond, space as u32, channels, alpha)
+}
+
+/// rgb(r, g, b, a, space), positional or named. Rgb and Rgba are the plain RGB
+/// forms; any other color space needs RgbEx with all five.
+fn emit_rgb(
+    compiler: &mut Compiler<'_>,
+    args: &[Expression],
+) -> Result<Option<EvalKind>, CompileError> {
+    let Some((slots, space)) = rgb_slots(args) else {
+        return Ok(None);
+    };
+    // A colour of constants is stored as its text
+    if let Some(text) = rgb_constant(compiler, args) {
+        compiler.emit_ins(Instruction::PushVal(operands::Value::DMString(DMString(
+            text.into_bytes(),
+        ))));
+        return Ok(Some(EvalKind::Stack));
+    }
     let [r, g, b, a, sp] = slots;
-    // Constant RGB colors are stored as their "#rrggbb" or "#rrggbbaa" text
-    // (channels truncated)
-    if sp.is_none() && space.is_none() {
-        let channels: Vec<Option<f32>> = [&r, &g, &b, &a]
-            .iter()
-            .filter_map(|e| e.as_ref())
-            .map(|e| super::fold::number(compiler, e))
-            .collect();
-        if channels.iter().all(Option::is_some) {
-            let mut text = String::from("#");
-            for c in channels {
-                text.push_str(&format!("{:02x}", c.unwrap().clamp(0.0, 255.0) as u8));
-            }
-            compiler.emit_ins(Instruction::PushVal(operands::Value::DMString(DMString(
-                text.into_bytes(),
-            ))));
-            return Ok(Some(EvalKind::Stack));
-        }
-    }
-    // and so are constant HSL ones (channels rounded)
-    let space_value = space.or_else(|| sp.as_ref().and_then(|e| super::fold::number(compiler, e)));
-    if space_value == Some(2.0) && a.is_none() {
-        let channels: Vec<Option<f32>> = [&r, &g, &b]
-            .iter()
-            .map(|e| super::fold::number(compiler, e.as_ref().unwrap()))
-            .collect();
-        if let [Some(h), Some(s), Some(l)] = channels[..] {
-            let text = super::fold::hsl_text(h, s, l);
-            compiler.emit_ins(Instruction::PushVal(operands::Value::DMString(DMString(
-                text.into_bytes(),
-            ))));
-            return Ok(Some(EvalKind::Stack));
-        }
-    }
     for e in [r, g, b] {
         push_args(compiler, &[e.unwrap()])?;
     }
