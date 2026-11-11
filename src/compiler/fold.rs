@@ -108,6 +108,7 @@ pub(super) fn constant(c: &Compiler, expr: &Expression) -> Option<Constant> {
                 Term::Ident(name) if !super::procs::is_builtin_const(c, name.as_str()) => {
                     return None
                 }
+                Term::GlobalIdent(_) => return None,
                 Term::Expr(inner) if constant(c, inner).is_none() => return None,
                 _ => {}
             }
@@ -179,14 +180,18 @@ fn field_const(
     term: &dreammaker::ast::Spanned<Term>,
     fields: &[dreammaker::ast::Spanned<Follow>],
 ) -> Option<Constant> {
+    let Follow::Field(_, name) = &fields[fields.len() - 1].elem else {
+        return None;
+    };
+    // `global.name` is the global const, whatever else has the name
+    if fields.len() == 1 && matches!(&term.elem, Term::Ident(i) if i.as_str() == "global") {
+        return from_objtree(&super::procs::global_const_value(c, name.as_str())?);
+    }
     let holder = Expression::Base {
         term: Box::new(term.clone()),
         follow: fields[..fields.len() - 1].to_vec().into_boxed_slice(),
     };
     let ty = super::procs::expr_type(c, &holder)?;
-    let Follow::Field(_, name) = &fields[fields.len() - 1].elem else {
-        return None;
-    };
     let decl = super::procs::member_var(ty, name.as_str())?;
     // (builtin vars like `type` are declared const but differ per object)
     if !decl.get().var_type.flags.is_const()
@@ -429,6 +434,10 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
             Constant::Number(x.max(a.min(b)).min(a.max(b)))
         }
         Term::Ident(name) => from_objtree(&super::procs::const_value(c, name.as_str())?)?,
+        // (`::name` of a const, as the name alone)
+        Term::GlobalIdent(name) => {
+            from_objtree(&super::procs::global_const_value(c, name.as_str())?)?
+        }
         _ => return None,
     })
 }

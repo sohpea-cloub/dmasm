@@ -371,6 +371,28 @@ fn a_logical_operator_folded_to_its_first_value_forgets_the_cache() {
     }
 }
 
+/// `global.name` and `::name` of a const fold as the name alone does.
+#[test]
+fn a_global_const_named_through_global_folds() {
+    let code = |body: &str| {
+        compile(
+            &format!(
+                "var/const/gc = 7\n/datum/d\n\tvar/const/gc = 9\n/datum/d/proc/f(a)\n\t{body}\n"
+            ),
+            "/datum/d",
+            "f",
+        )
+    };
+    assert_has(&code("return global.gc + 1"), &["PushInt 8", "Ret"]);
+    assert_has(&code("return ::gc + 1"), &["PushInt 8", "Ret"]);
+    assert_has(&code("return gc + 1"), &["PushInt 10", "Ret"]);
+    assert_has(&code("return global.gc ? a : 2"), &["GetVar arg(0)", "Ret"]);
+    // alone it's read from the global
+    assert_has(&code("return global.gc"), &["GetVar global(\"gc\")", "Ret"]);
+    // a switch's case
+    assert!(code("switch (a)\n\t\tif (global.gc)\n\t\t\treturn 1").contains("Switch default => "));
+}
+
 /// DreamMaker writes the field of `x.f ||= v` the way it read it for the test.
 #[test]
 fn a_logical_assignment_writes_its_field_as_it_read_it() {

@@ -778,6 +778,21 @@ pub(super) fn const_value(
     const_lookup(compiler, name).map(|(value, _)| value)
 }
 
+/// The value of `global.name`, where that's a const of the code's own.
+pub(super) fn global_const_value(
+    compiler: &Compiler,
+    name: &str,
+) -> Option<dreammaker::constants::Constant> {
+    let root = compiler.proc.as_ref()?.tree.root();
+    let decl = root.get_var_declaration(name)?;
+    if !decl.get().var_type.flags.is_const()
+        || decl.get().location.file == dreammaker::FileId::BUILTINS
+    {
+        return None;
+    }
+    root.get_value(name)?.constant.clone()
+}
+
 /// Whether a bare identifier is a builtin constant like NORTH. DreamMaker
 /// writes those in as values; a const of the code's own is read from its
 /// global unless it's part of a larger constant expression.
