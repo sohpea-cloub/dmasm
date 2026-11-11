@@ -169,10 +169,11 @@ mod tests {
         write("map.dmm", "");
 
         let all = names(&dir.join("t.dme"), &|_| true);
-        let all: Vec<(&str, &str)> = all
+        let all: Vec<(&str, &Path)> = all
             .iter()
-            .map(|(name, path)| (name.as_str(), path.to_str().unwrap()))
+            .map(|(name, path)| (name.as_str(), path.as_path()))
             .collect();
+        // Compared as paths: Windows has them with its own separator
         assert_eq!(
             all,
             [
@@ -191,6 +192,7 @@ mod tests {
                 ("sub2/f.dm", "sub2/f.dm"),
                 ("sub2/g.dm", "sub2/g.dm"),
             ]
+            .map(|(name, path)| (name, Path::new(path)))
         );
 
         // Only what a build read
