@@ -170,6 +170,36 @@ fn tan_folds_as_each_build_does() {
     assert_eq!(ret(B516_1688, "tan(1e10)"), "PushVal -5.671282");
 }
 
+/// `\ref`, `\icon` and `\roman` belong to the next embedded value, wherever
+/// in the text they're written.
+#[test]
+fn a_macro_that_takes_a_value_goes_to_the_next_one() {
+    let text = |expr: &str| ret(B516_1688, expr);
+    assert_eq!(text(r#""\ref[a]""#), "GetVar arg(0)\nFormat \"\\ref[]\" 1");
+    assert_eq!(
+        text(r#""x\ref y[a]""#),
+        "GetVar arg(0)\nFormat \"x y\\ref[]\" 1"
+    );
+    assert_eq!(
+        text(r#""\roman x [a]""#),
+        "GetVar arg(0)\nFormat \" x \\roman[]\" 1"
+    );
+    // with no value after it, it's dropped
+    assert_eq!(text(r#""x \ref""#), "PushVal \"x \"");
+    assert_eq!(text(r#""[a]\roman""#), "GetVar arg(0)\nFormat \"[]\" 1");
+    // the first of two has the value, and an article before or after has it
+    assert_eq!(
+        text(r#""\ref\icon[a]""#),
+        "GetVar arg(0)\nFormat \"\\ref[]\" 1"
+    );
+    assert_eq!(
+        text(r#""\the \ref[a]""#),
+        "GetVar arg(0)\nFormat \"\\the[]\" 1"
+    );
+    // \UXXXXXX is a character
+    assert_eq!(text(r#""\U01F600""#), "PushVal \"\u{1F600}\"");
+}
+
 #[test]
 fn json_decode_takes_flags() {
     for byond in [B515_1637, B516_1688] {

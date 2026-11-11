@@ -324,8 +324,9 @@ pub(super) struct TextBuilder {
     sentence_start: bool,
     /// The last thing was an article macro.
     after_article: bool,
-    /// The last thing was `\ref` or another macro that takes the next embed.
-    embed_taken: bool,
+    /// A `\ref` or another macro that takes the next embedded value, however
+    /// much text comes first. With no value after it, it's dropped.
+    pending_embed: Option<u8>,
     /// Inside an HTML tag, with what `sentence_start` was before it. A tag as
     /// a whole doesn't count as text, but what's inside it does.
     in_tag: Option<bool>,
@@ -342,7 +343,7 @@ impl TextBuilder {
             buf: vec![],
             sentence_start: true,
             after_article: false,
-            embed_taken: false,
+            pending_embed: None,
             in_tag: None,
             tag_start: true,
             coloured: false,
@@ -352,12 +353,6 @@ impl TextBuilder {
 
     fn text_byte(&mut self, b: u8) {
         self.buf.push(b);
-        // An article applies to the next embedded value, whatever text comes
-        // first; \ref and the like only to one directly after them (tags
-        // don't count)
-        if self.in_tag.is_none() && b != b'<' {
-            self.embed_taken = false;
-        }
         // At the end of a tag the sentence is where it was at the tag's start;
         // a `>` without a tag goes back to the last tag's start (or the
         // string's)
@@ -383,15 +378,15 @@ impl TextBuilder {
     fn literal_bytes(&mut self, bytes: &[u8]) {
         self.buf.extend_from_slice(bytes);
         self.after_article = false;
-        self.embed_taken = false;
         self.sentence_start = false;
     }
 
     /// Marks where an embedded value goes.
     pub fn embed(&mut self) {
         self.embeds += 1;
-        if self.embed_taken {
-            self.embed_taken = false;
+        if let Some(code) = self.pending_embed.take() {
+            self.buf.push(0xFF);
+            self.buf.push(code);
             self.sentence_start = false;
             return;
         }
@@ -430,6 +425,22 @@ impl TextBuilder {
                 if let Some(c) = hex.and_then(|h| char::from_u32(u32::from_str_radix(h, 16).ok()?))
                 {
                     i += 5;
+                    let mut utf8 = [0; 4];
+                    for &b in c.encode_utf8(&mut utf8).as_bytes() {
+                        self.text_byte(b);
+                    }
+                    continue;
+                }
+            }
+
+            // \UXXXXXX: the same with six digits
+            if next == b'U' {
+                let hex = data
+                    .get(i + 1..i + 7)
+                    .filter(|h| h.chars().all(|c| c.is_ascii_hexdigit()));
+                if let Some(c) = hex.and_then(|h| char::from_u32(u32::from_str_radix(h, 16).ok()?))
+                {
+                    i += 7;
                     let mut utf8 = [0; 4];
                     for &b in c.encode_utf8(&mut utf8).as_bytes() {
                         self.text_byte(b);
@@ -481,6 +492,16 @@ impl TextBuilder {
                 {
                     self.buf.truncate(self.buf.len() - 2);
                 }
+                // \ref and the like go where the next embedded value is
+                // (the first of them, and none after an article, which has
+                // the value already)
+                if m.kind == MacroKind::TakesEmbed {
+                    if !self.after_article {
+                        self.pending_embed.get_or_insert(m.code);
+                        self.sentence_start = false;
+                    }
+                    continue;
+                }
                 self.buf.push(0xFF);
                 self.buf.push(m.code);
                 // A colour (\red ... \magenta) counts as the character of
@@ -496,7 +517,10 @@ impl TextBuilder {
                     continue;
                 }
                 self.after_article = m.kind == MacroKind::Article;
-                self.embed_taken = m.kind == MacroKind::TakesEmbed;
+                // (an article has the next value, whatever \ref came before)
+                if self.after_article {
+                    self.pending_embed = None;
+                }
                 if m.kind != MacroKind::Article {
                     self.sentence_start = false;
                 }
@@ -509,8 +533,9 @@ impl TextBuilder {
                 b't' => self.text_byte(b'\t'),
                 b'<' => self.literal_bytes(b"&lt;"),
                 b'>' => self.literal_bytes(b"&gt;"),
-                b'"' => self.text_byte(b'"'),
-                b'\'' | b'\\' | b'[' | b']' | b'{' | b'}' => self.literal_bytes(&[next]),
+                // (a quote either way: a sentence can start after it)
+                b'"' | b'\'' => self.text_byte(next),
+                b'\\' | b'[' | b']' | b'{' | b'}' => self.literal_bytes(&[next]),
                 // `\ ` is nothing (it ends a line continuation's indent)
                 b' ' => {}
                 // \xHH: the character U+00HH, in UTF-8 (`\xe9` is é)
