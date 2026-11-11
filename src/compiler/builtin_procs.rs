@@ -574,6 +574,11 @@ fn emit_rgb(
     Ok(Some(EvalKind::Stack))
 }
 
+/// Whether `expr` is a `list(...)` written out
+fn is_list_literal(expr: &Expression) -> bool {
+    matches!(expr, Expression::Base { term, follow } if follow.is_empty() && matches!(term.elem, Term::List(_)))
+}
+
 fn ident_name(expr: &Expression) -> Option<String> {
     match expr {
         Expression::Base { term, follow } if follow.is_empty() => match &term.elem {
@@ -902,6 +907,15 @@ fn emit_overloaded(
                     }
                 }
                 compiler.emit_ins(Instruction::NewAssocList(n as u32));
+            } else if let Some(list) = (n == 1).then(|| arglist_inner(&args[0])).flatten() {
+                // gradient(arglist(L)): L is the list
+                push_args(compiler, std::slice::from_ref(list))?;
+            } else if n == 2 && is_list_literal(&args[0]) {
+                // gradient(list(...), index): a gradient written out, and
+                // where to read it
+                push_args(compiler, args)?;
+                compiler.emit_ins(Instruction::GradientIndex);
+                return Ok(Some(EvalKind::Stack));
             } else {
                 push_args(compiler, args)?;
                 compiler.emit_ins(Instruction::NewList(n as u32));

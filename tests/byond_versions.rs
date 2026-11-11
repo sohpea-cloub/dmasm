@@ -331,3 +331,22 @@ fn a_colour_of_constants_is_its_text_in_any_colour_space() {
     assert!(text("rgb(a, 2, 3)").ends_with("Rgb"));
     assert!(text("rgb(h = a, s = 2, v = 3)").ends_with("RgbEx"));
 }
+
+#[test]
+fn a_gradient_written_out_is_read_at_an_index() {
+    // gradient(list(...), index): the list is the gradient
+    assert_eq!(
+        ret(B516_1688, "gradient(list(\"#000000\", \"#ffffff\"), a)"),
+        "PushVal \"#000000\"\nPushVal \"#ffffff\"\nNewList 2\nGetVar arg(0)\nGradientIndex"
+    );
+    // a list that isn't written out there is one of gradient()'s arguments
+    assert_eq!(
+        ret(B516_1688, "gradient(a, 0.5)"),
+        "GetVar arg(0)\nPushVal 0.5\nNewList 2\nGradient"
+    );
+    // and arglist()'s list is all of them
+    assert_eq!(
+        ret(B516_1688, "gradient(arglist(a))"),
+        "GetVar arg(0)\nGradient"
+    );
+}
