@@ -607,6 +607,18 @@ fn hex_byte(v: f64) -> String {
     format!("{:02x}", v.clamp(0.0, 255.0) as u8)
 }
 
+/// A percentage as the share of 1 DreamMaker works with: in single precision
+/// (the rest of a colour is worked out in double).
+fn share(percent: f64) -> f64 {
+    (percent / 100.0) as f32 as f64
+}
+
+/// A channel from its share of 1: scaled to 255, put in single precision
+/// and then rounded half up (so 178.49999 is 179: it's 178.5 as a single).
+fn channel(share: f64, nudge: f64) -> String {
+    hex_byte(((share * 255.0) as f32 as f64 + 0.5 + nudge).floor())
+}
+
 /// `rgb(h, s, v)` of constants in the HSV colour space, as DreamMaker folds
 /// it: the hue turned into [0, 360), the others kept to [0, 100] (from 516),
 /// and each channel rounded.
@@ -619,8 +631,8 @@ pub(super) fn hsv_text(byond: crate::ByondVersion, h: f32, s: f32, v: f32, nudge
     };
     let (h, s, v) = (
         h as f64,
-        (s as f64).clamp(range.0, range.1) / 100.0,
-        (v as f64).clamp(range.0, range.1) / 100.0,
+        share((s as f64).clamp(range.0, range.1)),
+        share((v as f64).clamp(range.0, range.1)),
     );
     let chroma = v * s;
     let h6 = h.rem_euclid(360.0) / 60.0;
@@ -634,7 +646,7 @@ pub(super) fn hsv_text(byond: crate::ByondVersion, h: f32, s: f32, v: f32, nudge
         _ => (chroma, 0.0, x),
     };
     let m = v - chroma;
-    let byte = |c: f64| hex_byte(((c + m) * 255.0 + 0.5 + nudge).floor());
+    let byte = |c: f64| channel(c + m, nudge);
     format!("#{}{}{}", byte(r), byte(g), byte(b))
 }
 
@@ -645,7 +657,7 @@ pub(super) fn hsv_text(byond: crate::ByondVersion, h: f32, s: f32, v: f32, nudge
 /// luminance outside [0, 100] is worked with as it is.
 pub(super) fn hcy_text(h: f32, c: f32, y: f32, nudge: f64) -> String {
     // (neither is kept to [0, 100]: only the channels they give are)
-    let (h, c, y) = (h as f64, c as f64 / 100.0, y as f64 / 100.0);
+    let (h, c, y) = (h as f64, share(c as f64), share(y as f64));
     let h6 = h.rem_euclid(360.0) / 60.0;
     let k = 1.0 - (h6 % 2.0 - 1.0).abs();
     let (r, g, b) = match h6 as u32 {
@@ -665,7 +677,7 @@ pub(super) fn hcy_text(h: f32, c: f32, y: f32, nudge: f64) -> String {
         0.0
     };
     let m = y - weight * chroma;
-    let byte = |v: f64| hex_byte(((v * chroma + m) * 255.0 + 0.5 + nudge).floor());
+    let byte = |v: f64| channel(v * chroma + m, nudge);
     format!("#{}{}{}", byte(r), byte(g), byte(b))
 }
 
@@ -694,7 +706,7 @@ pub(super) fn rgb_text(
         1..=3 => {
             // Builds before 515.1647 round in another precision, which shows
             // where a channel is right between two values: left to run there
-            if byond.build < super::versions::DOUBLE_COLOURS && rounded(1e-7) != rounded(-1e-7) {
+            if byond.build < super::versions::DOUBLE_COLOURS && rounded(1e-3) != rounded(-1e-3) {
                 return None;
             }
             rounded(0.0)
@@ -710,8 +722,8 @@ pub(super) fn rgb_text(
 pub(super) fn hsl_text(h: f32, s: f32, l: f32, nudge: f64) -> String {
     let (h, s, l) = (
         h as f64,
-        (s as f64).clamp(0.0, 100.0) / 100.0,
-        (l as f64).clamp(0.0, 100.0) / 100.0,
+        share((s as f64).clamp(0.0, 100.0)),
+        share((l as f64).clamp(0.0, 100.0)),
     );
     let chroma = (1.0 - (2.0 * l - 1.0).abs()) * s;
     let h6 = h.rem_euclid(360.0) / 60.0;
@@ -725,6 +737,6 @@ pub(super) fn hsl_text(h: f32, s: f32, l: f32, nudge: f64) -> String {
         _ => (chroma, 0.0, x),
     };
     let m = l - chroma / 2.0;
-    let byte = |v: f64| hex_byte(((v + m) * 255.0 + 0.5 + nudge).floor());
+    let byte = |v: f64| channel(v + m, nudge);
     format!("#{}{}{}", byte(r), byte(g), byte(b))
 }

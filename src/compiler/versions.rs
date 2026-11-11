@@ -28,10 +28,10 @@ const NEW_IN_516: &[&str] = &[
     "pixloc",
 ];
 
-/// The first build known to round a folded colour's channels (`rgb()` of
-/// constants in the HSV, HSL or HCY space) in double precision. 515.1637
-/// rounds a channel that's right between two values the other way; the
-/// builds between weren't probed.
+/// The first build known to work out a folded colour's channels (`rgb()` of
+/// constants in the HSV, HSL or HCY space) as `fold::rgb_text` does. 515.1637
+/// keeps other steps in single precision, which shows in a channel that's
+/// between two values, or nearly; the builds between weren't probed.
 pub(super) const DOUBLE_COLOURS: u32 = 1647;
 
 /// The first build that restores the cache before reading the list and index

@@ -325,8 +325,43 @@ fn a_colour_of_constants_is_its_text_in_any_colour_space() {
         ret(B516_1659, "rgb(h = 90, s = 100.4, v = 50)"),
         "PushVal \"#408000\""
     );
-    // Before 515.1647 a channel right between two values is left to run
+    // A saturation and the like are shares of 1 in single precision, and a
+    // channel is rounded as a single: these are right between two values
+    assert_eq!(
+        text("rgb(0, 60, 25, space = COLORSPACE_HSV)"),
+        "PushVal \"#401919\""
+    );
+    assert_eq!(
+        text("rgb(200, 100, 75, space = COLORSPACE_HSV)"),
+        "PushVal \"#0080bf\""
+    );
+    assert_eq!(
+        text("rgb(0, 0, 70, space = COLORSPACE_HSV)"),
+        "PushVal \"#b3b3b3\""
+    );
+    assert_eq!(
+        text("rgb(180, 60, 25, space = COLORSPACE_HSL)"),
+        "PushVal \"#196666\""
+    );
+    assert_eq!(
+        text("rgb(200, 80, 50, space = COLORSPACE_HSL)"),
+        "PushVal \"#19a2e6\""
+    );
+    assert_eq!(
+        text("rgb(0, 60, 25, space = COLORSPACE_HCY)"),
+        "PushVal \"#991919\""
+    );
+    assert_eq!(
+        ret(B515_1647, "rgb(330, 60, 75, space = COLORSPACE_HCY)"),
+        "PushVal \"#e6aac8\""
+    );
+    // Before 515.1647 a channel between two values, or nearly, is left to run
     assert!(ret(B515_1637, "rgb(158, 53, 70, 64, COLORSPACE_HSV)").ends_with("RgbEx"));
+    assert!(ret(B515_1637, "rgb(0, 0, 70, space = COLORSPACE_HSV)").ends_with("RgbEx"));
+    assert_eq!(
+        ret(B515_1637, "rgb(0, 0, 71, space = COLORSPACE_HSV)"),
+        "PushVal \"#b5b5b5\""
+    );
     assert_eq!(
         ret(B515_1647, "rgb(158, 53, 70, 64, COLORSPACE_HSV)"),
         "PushVal \"#54b39040\""
