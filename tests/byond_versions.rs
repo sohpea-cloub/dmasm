@@ -170,6 +170,24 @@ fn tan_folds_as_each_build_does() {
     assert_eq!(ret(B516_1688, "tan(1e10)"), "PushVal -5.671282");
 }
 
+/// A hexadecimal literal beyond an i32 is the number it is.
+#[test]
+fn a_hexadecimal_literal_beyond_an_i32() {
+    assert_eq!(
+        ret(B516_1688, "a + 0xFFFFFFFF"),
+        "GetVar arg(0)\nPushVal 4294967300\nAdd"
+    );
+    assert_eq!(
+        ret(B516_1688, "a + 0x80000000"),
+        "GetVar arg(0)\nPushVal 2147483600\nAdd"
+    );
+    assert_eq!(
+        ret(B516_1688, "a + 0x7FFFFFFF"),
+        "GetVar arg(0)\nPushVal 2147483600\nAdd"
+    );
+    assert_eq!(ret(B515_1647, "0xDEADBEEF"), "PushVal 3735928600");
+}
+
 /// Folds at the edges, as DreamMaker has them on every build.
 #[test]
 fn folds_at_the_edges() {
