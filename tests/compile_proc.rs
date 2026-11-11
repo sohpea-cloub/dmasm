@@ -471,6 +471,36 @@ fn rarer_forms_of_builtins_on_their_own_line() {
     );
 }
 
+/// A variable on its own line is no code, and a test that only sets the flag
+/// has nothing to drop.
+#[test]
+fn a_line_that_does_nothing() {
+    let code = |body: &str| {
+        compile(
+            &format!("/datum/var/x\n/proc/f(datum/a, b)\n\t{body}\n\treturn b\n"),
+            "",
+            "f",
+        )
+    };
+    for nothing in ["a", "(a)", "a.x", "usr", "null"] {
+        assert_eq!(code(nothing).trim(), "GetVar arg(1)\nRet\nEnd", "{nothing}");
+    }
+    assert_has(
+        &code("isarea(a)"),
+        &["GetVar arg(0)", "IsArea", "GetVar arg(1)", "Ret"],
+    );
+    // a comparison keeps its drops
+    assert_has(
+        &code("a == b"),
+        &["Teq", "Pop", "GetFlag", "Pop", "GetVar arg(1)", "Ret"],
+    );
+    // and a call is still made
+    assert_has(
+        &code("isnull(a)"),
+        &["GetVar arg(0)", "IsNull", "Pop", "GetVar arg(1)", "Ret"],
+    );
+}
+
 /// What `pick()` gives a weight of 0 isn't one of its cases, and a switch's
 /// case of -0 is 0.
 #[test]

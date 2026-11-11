@@ -1782,7 +1782,44 @@ fn emit_expr_statement(compiler: &mut Compiler, expr: &Expression) -> Result<(),
     {
         return Ok(());
     }
+    // nor does a variable, a field of one or null (`x`, `(a.b)`)
+    if let Expression::Base { term, follow } = strip_parens(expr) {
+        let plain = matches!(term.elem, Term::Ident(_) | Term::Null)
+            && follow.iter().all(|f| {
+                matches!(
+                    f.elem,
+                    Follow::Field(
+                        dreammaker::ast::PropertyAccessKind::Dot
+                            | dreammaker::ast::PropertyAccessKind::Colon,
+                        _
+                    )
+                )
+            });
+        if plain {
+            return Ok(());
+        }
+    }
     emit_expr_statement_inner(compiler, expr)?;
+    // A test that only sets the flag (`isarea(x)` on its own line) leaves
+    // nothing to drop
+    // (a comparison's `Teq; Pop; GetFlag; Pop` stays as it is)
+    let n = compiler.nodes.len();
+    if n >= 3
+        && matches!(
+            compiler.nodes[n - 1],
+            Node::Instruction(Instruction::Pop, _)
+        )
+        && matches!(
+            compiler.nodes[n - 2],
+            Node::Instruction(Instruction::GetFlag, _)
+        )
+        && !matches!(
+            compiler.nodes[n - 3],
+            Node::Instruction(Instruction::Pop, _)
+        )
+    {
+        compiler.nodes.truncate(n - 2);
+    }
     // (`(x |= y)` counts too, and so does reading into x with `>>`)
     let assignment = match strip_parens(expr) {
         Expression::BinaryOp {
