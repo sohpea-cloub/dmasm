@@ -332,8 +332,10 @@ pub(super) struct TextBuilder {
     in_tag: Option<bool>,
     /// `sentence_start` at the start of the last tag.
     tag_start: bool,
-    /// A colour macro (`\red`) came before.
-    coloured: bool,
+    /// The colour in force (`\red`'s code), if one is.
+    colour: Option<u8>,
+    /// The styles (`\bold`, `\italic`, ...) in force, by their codes.
+    styles: Vec<u8>,
     embeds: u32,
 }
 
@@ -346,7 +348,8 @@ impl TextBuilder {
             pending_embed: None,
             in_tag: None,
             tag_start: true,
-            coloured: false,
+            colour: None,
+            styles: vec![],
             embeds: 0,
         }
     }
@@ -466,12 +469,42 @@ impl TextBuilder {
                 i += m.name.len();
                 let space_after = bytes.get(i) == Some(&b' ');
                 let colour = (31..=38).contains(&m.code);
-                // A colour after the first one (which ends the one before)
-                // takes the space before it, if there is one, instead of the
-                // one after
-                let ends_colour = colour && std::mem::replace(&mut self.coloured, true);
-                if ends_colour && space_after && self.buf.last() == Some(&b' ') {
-                    self.buf.pop();
+                let style = (23..=26).contains(&m.code);
+                // A colour while one is in force ends that one, and a style
+                // that's in force is ended by its macro again. Either takes
+                // the space before it, if there is one, instead of the one
+                // after. The colour that's in force, again, ends colour
+                // altogether (code 30).
+                let mut code = m.code;
+                let ends = if colour {
+                    let was = self.colour;
+                    if was == Some(m.code) {
+                        code = 30;
+                        self.colour = None;
+                    } else {
+                        self.colour = Some(m.code);
+                    }
+                    was.is_some()
+                } else if style {
+                    match self.styles.iter().position(|c| *c == m.code) {
+                        Some(at) => {
+                            self.styles.remove(at);
+                            true
+                        }
+                        None => {
+                            self.styles.push(m.code);
+                            false
+                        }
+                    }
+                } else {
+                    false
+                };
+                if ends {
+                    // (a space that's text, not the code of `\green`)
+                    let n = self.buf.len();
+                    if self.buf.last() == Some(&b' ') && (n < 2 || self.buf[n - 2] != 0xFF) {
+                        self.buf.pop();
+                    }
                 } else if m.space && space_after {
                     i += 1;
                 } else if m.kind == MacroKind::TakesEmbed && space_after {
@@ -503,13 +536,13 @@ impl TextBuilder {
                     continue;
                 }
                 self.buf.push(0xFF);
-                self.buf.push(m.code);
+                self.buf.push(code);
                 // A colour (\red ... \magenta) counts as the character of
                 // its code for where sentences start: \blue (33) is a `!`,
                 // \green and \black (32, 34) a space and a `"`, the rest end
                 // a sentence's start
                 if (31..=38).contains(&m.code) {
-                    match m.code {
+                    match code {
                         33 => self.sentence_start = true,
                         32 | 34 => {}
                         _ => self.sentence_start = false,

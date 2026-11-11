@@ -203,6 +203,29 @@ fn a_macro_that_takes_a_value_goes_to_the_next_one() {
     assert_eq!(text(r#""\U01F600""#), "PushVal \"\u{1F600}\"");
 }
 
+/// The old colour and style macros switch off when they come again.
+#[test]
+fn a_colour_or_style_macro_again_ends_it() {
+    let text = |t: &str| ret(B516_1688, &format!("\"{t}\""));
+    // the colour in force again ends colour (code 30, shown as \color), and
+    // takes the space before it instead of the one after
+    assert_eq!(text(r"\red x \red y"), r#"PushVal "\red x\color y""#);
+    assert_eq!(text(r"\red x\red y"), r#"PushVal "\red x\color y""#);
+    // another colour takes over, and after colour has ended one starts again
+    assert_eq!(text(r"\red x \blue y"), r#"PushVal "\red x\blue  y""#);
+    assert_eq!(
+        text(r"\red x \red y \red z"),
+        r#"PushVal "\red x\color y \red z""#
+    );
+    // a style is ended by its own macro, with the same code
+    assert_eq!(text(r"\bold x \bold y"), r#"PushVal "\bold x\bold  y""#);
+    assert_eq!(text(r"\bold x \italic y"), r#"PushVal "\bold x \italic y""#);
+    assert_eq!(
+        text(r"\italic x \italic y"),
+        r#"PushVal "\italic x\italic  y""#
+    );
+}
+
 #[test]
 fn json_decode_takes_flags() {
     for byond in [B515_1637, B516_1688] {
