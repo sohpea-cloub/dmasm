@@ -371,6 +371,51 @@ fn a_logical_operator_folded_to_its_first_value_forgets_the_cache() {
     }
 }
 
+/// DreamMaker writes the field of `x.f ||= v` the way it read it for the test.
+#[test]
+fn a_logical_assignment_writes_its_field_as_it_read_it() {
+    let code = |body: &str| {
+        compile(
+            &format!("/datum/d\n\tvar/x\n\tvar/y\n/datum/d/proc/f(b)\n\t{body}\n"),
+            "/datum/d",
+            "f",
+        )
+    };
+    // The cache has src from the statement before: read from it, written to it
+    assert_has(
+        &code("src.y = 1\n\tsrc.x &&= b"),
+        &[
+            "GetVar cache[\"x\"]",
+            "Test",
+            "Jz LAB_0001",
+            "GetVar arg(0)",
+            "SetVar cache[\"x\"]",
+        ],
+    );
+    // A bare `y` loaded it, which `src.x` written out doesn't read from, or
+    // write to
+    assert_has(
+        &code("y = 1\n\tsrc.x &&= b"),
+        &[
+            "GetVar cache = src; cache[\"x\"]",
+            "Test",
+            "Jz LAB_0001",
+            "GetVar arg(0)",
+            "SetVar cache = src; cache[\"x\"]",
+        ],
+    );
+    assert_has(
+        &code("src.y = 1\n\tx ||= b"),
+        &[
+            "GetVar cache = src; cache[\"x\"]",
+            "Test",
+            "Jnz LAB_0001",
+            "GetVar arg(0)",
+            "SetVar cache = src; cache[\"x\"]",
+        ],
+    );
+}
+
 #[test]
 fn dropped_constant_forgets_cache() {
     // `0 || a.m` is `a.m`, but DreamMaker forgets what the cache held

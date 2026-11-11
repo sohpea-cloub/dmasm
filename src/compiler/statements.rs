@@ -1954,6 +1954,9 @@ fn emit_expr_statement_inner(
                 // unless the cache held it before the test; a chain through
                 // fields the test loaded isn't reused for the value either)
                 let before = compiler.cache.clone();
+                // (and as the test read it: `src.x` written out doesn't reuse a
+                // cache a bare `x` loaded, for the assignment either)
+                let explicit_src = compiler.explicit_src;
                 compiler.emit_ins(Instruction::GetVar(var.clone()));
                 if field && compiler.cache.as_ref().is_some_and(|h| h.len() > 1) {
                     compiler.cache = before.clone();
@@ -1992,6 +1995,7 @@ fn emit_expr_statement_inner(
                 }
                 if field {
                     compiler.cache = before;
+                    compiler.explicit_src = explicit_src;
                 }
                 compiler.emit_ins(Instruction::SetVar(var));
                 compiler.emit_label(end);
