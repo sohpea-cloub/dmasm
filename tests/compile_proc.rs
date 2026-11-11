@@ -413,6 +413,33 @@ fn a_global_const_named_through_global_folds() {
     assert!(code("switch (a)\n\t\tif (global.gc)\n\t\t\treturn 1").contains("Switch default => "));
 }
 
+/// What `pick()` gives a weight of 0 isn't one of its cases, and a switch's
+/// case of -0 is 0.
+#[test]
+fn a_pick_of_weight_0_and_a_case_of_minus_0() {
+    let code = compile(
+        "/proc/f(a, b)\n\treturn pick(1; a, 0; b, 2; \"c\")\n",
+        "",
+        "f",
+    );
+    // one case (a's third of the draw) and the default, with b's value still written
+    let table = code.lines().find(|l| l.starts_with("PickSwitch")).unwrap();
+    assert_eq!(table.matches("=>").count(), 2, "{}", table);
+    assert!(table.contains("21845 =>"), "{}", table);
+    assert!(code.contains("GetVar arg(1)"), "{}", code);
+    let code = compile(
+        "/proc/f(a)\n\tswitch (a)\n\t\tif (-0)\n\t\t\treturn 1\n\treturn 2\n",
+        "",
+        "f",
+    );
+    let table = code.lines().find(|l| l.starts_with("Switch")).unwrap();
+    assert!(
+        table.contains(" 0 =>") && !table.contains("-0"),
+        "{}",
+        table
+    );
+}
+
 /// A parameter's `x = a in L` has the default a.
 #[test]
 fn a_parameter_default_stops_at_in() {

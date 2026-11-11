@@ -387,7 +387,22 @@ pub(super) fn emit(compiler: &mut Compiler<'_>, term: Term) -> Result<EvalKind, 
                     // Each weight's share is rounded down on its own
                     let mut threshold = 0u32;
                     let mut cases = vec![];
-                    for (weight, label) in weights.iter().zip(&labels).take(args.len() - 1) {
+                    // (what has a weight of 0 isn't one of the cases:
+                    // DreamMaker still writes its value, which nothing jumps
+                    // to. A text for a weight counts as 0 and is a case.)
+                    let zero: Vec<bool> = args
+                        .iter()
+                        .map(|(w, _)| {
+                            w.as_ref()
+                                .is_some_and(|w| super::fold::number(compiler, w) == Some(0.0))
+                        })
+                        .collect();
+                    for ((weight, label), zero) in
+                        weights.iter().zip(&labels).zip(zero).take(args.len() - 1)
+                    {
+                        if zero {
+                            continue;
+                        }
                         threshold += (*weight as f64 / total as f64 * 65535.0).floor() as u32;
                         cases.push((threshold, Label::Named(label.clone())));
                     }

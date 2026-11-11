@@ -941,7 +941,8 @@ fn emit_statement_inner(
 /// A switch case's value, which must be a compile-time constant.
 fn constant_value(compiler: &mut Compiler, expr: &Expression) -> Result<Value, CompileError> {
     match super::fold::value(compiler, expr) {
-        Some(super::fold::Constant::Number(n)) => return Ok(Value::Number(n)),
+        // (a case of -0 is 0)
+        Some(super::fold::Constant::Number(n)) => return Ok(Value::Number(n + 0.0)),
         Some(super::fold::Constant::Text(t)) => {
             return Ok(Value::DMString(crate::operands::DMString(t)))
         }
