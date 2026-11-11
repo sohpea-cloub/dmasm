@@ -114,12 +114,20 @@ pub(super) const SINGLE_RADIANS: u32 = 1644;
 
 /// An angle from an inverse trig function, in degrees, as `byond`'s
 /// DreamMaker folds it.
-pub(super) fn degrees(byond: ByondVersion, radians: f64) -> f64 {
-    if byond.at_least(SINGLE_RADIANS) {
-        radians as f32 as f64 * 180.0 / std::f64::consts::PI
-    } else {
-        radians / (std::f64::consts::PI / 180.0)
+///
+/// From 515.1644 that's DreamMaker on Linux; on Windows it still works in
+/// double precision throughout, and the two are a single's last digit apart
+/// for some angles (`arctan(2)` is 63.43495 on Linux and 63.434948 on
+/// Windows). Each DreamDaemon does as its DreamMaker, and which built the
+/// world isn't known here: `None` where they differ, for the angle to be
+/// worked out when the proc runs.
+pub(super) fn degrees(byond: ByondVersion, radians: f64) -> Option<f64> {
+    let double = radians / (std::f64::consts::PI / 180.0);
+    if !byond.at_least(SINGLE_RADIANS) {
+        return Some(double);
     }
+    let single = radians as f32 as f64 * 180.0 / std::f64::consts::PI;
+    (single as f32 == double as f32).then_some(single)
 }
 
 /// `sin(x)` or `cos(x)` of `x` degrees as `byond`'s DreamMaker folds it.

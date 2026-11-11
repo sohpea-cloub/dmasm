@@ -263,9 +263,15 @@ fn math1(name: &str, x: f32, byond: crate::ByondVersion) -> Option<Option<f32>> 
         }),
         "sin" | "cos" => Some(super::versions::sin_cos(byond, name == "sin", d)),
         "tan" => x.is_finite().then(|| super::versions::tan(byond, x) as f64),
-        "arcsin" => (-1.0..=1.0).contains(&d).then(|| degrees(d.asin())),
-        "arccos" => (-1.0..=1.0).contains(&d).then(|| degrees(d.acos())),
-        "arctan" => Some(degrees(d.atan())),
+        "arcsin" => (-1.0..=1.0)
+            .contains(&d)
+            .then(|| degrees(d.asin()))
+            .flatten(),
+        "arccos" => (-1.0..=1.0)
+            .contains(&d)
+            .then(|| degrees(d.acos()))
+            .flatten(),
+        "arctan" => degrees(d.atan()),
         _ => return None,
     };
     Some(r.map(|r| r as f32))
@@ -337,7 +343,7 @@ fn base_value(c: &Compiler, term: &Term) -> Option<Constant> {
             }
             // (a y of -0 is 0 here: arctan(-1, -0) is 180, not -180)
             Constant::Number(
-                super::versions::degrees(c.byond, (y as f64 + 0.0).atan2(x as f64)) as f32,
+                super::versions::degrees(c.byond, (y as f64 + 0.0).atan2(x as f64))? as f32,
             )
         }
         // isnan(1) and isinf(1) (see versions::clean_nan_fold)

@@ -53,7 +53,9 @@ forms) with each build's DreamMaker and comparing. Builds checked: 515.1637, 515
 - **Folded maths.** 515 converts degrees to radians as they are; 516 first takes the
   angle to [0, 360) and splits off whole quarter turns, so `sin(180)` is exactly 0. From
   515.1644 the radians from `arcsin`, `arccos` and
-  `arctan` are rounded to single precision before they're turned into degrees. `%%`
+  `arctan` are rounded to single precision before they're turned into degrees by
+  DreamMaker on Linux, and not on Windows: where the two differ (`arctan(2)` is 63.43495
+  and 63.434948) the compiler leaves the angle to run (an encoding difference). `%%`
   folds as `fmod` in double precision. 515's `tan` folds in double precision; 516's
   takes the angle to (-180, 180], splits off whole quarter turns, takes the tangent of
   what's left measured from the nearer axis (so of at most 45 degrees) in double

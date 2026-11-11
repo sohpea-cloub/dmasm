@@ -135,20 +135,20 @@ fn inverse_trig_rounds_radians_from_515_1647() {
         ret(ByondVersion::new(515, 1643), "arctan(16777215)"),
         "PushInt 90"
     );
-    assert_eq!(
-        ret(ByondVersion::new(515, 1644), "arctan(16777215)"),
-        "PushVal 89.99999"
-    );
+    // From 515.1644 DreamMaker on Linux rounds the radians to single precision
+    // first, and on Windows it doesn't: where that shows, the angle is left to
+    // run (89.99999 and 90 here, 63.43495 and 63.434948 for arctan(2))
+    assert!(ret(ByondVersion::new(515, 1644), "arctan(16777215)").ends_with("ArcTan"));
     assert_eq!(ret(B515_1637, "arctan(2)"), "PushVal 63.434948");
-    assert_eq!(ret(B516_1688, "arctan(2)"), "PushVal 63.43495");
-    assert_eq!(ret(B516_1688, "arctan(1, 2)"), "PushVal 63.43495");
-    assert_eq!(ret(B516_1688, "arctan(3, -4)"), "PushVal -53.1301");
+    assert!(ret(B516_1688, "arctan(2)").ends_with("ArcTan"));
+    assert!(ret(B516_1688, "arctan(1, 2)").ends_with("ArcTan2"));
+    assert_eq!(ret(B516_1688, "arctan(1)"), "PushInt 45");
+    assert_eq!(ret(B516_1688, "arctan(1, 1)"), "PushInt 45");
     // a y of -0 counts as 0
     assert_eq!(ret(B516_1688, "arctan(-1, -(0))"), "PushInt 180");
     assert_eq!(ret(B516_1688, "arctan(-1, 0 * -1)"), "PushInt 180");
-    assert_eq!(ret(B516_1688, "arctan(-1, -0.5)"), "PushVal -153.43495");
     assert_eq!(ret(B515_1637, "arccos(0.7071)"), "PushVal 45.000553");
-    assert_eq!(ret(B516_1688, "arccos(0.7071)"), "PushVal 45.00055");
+    assert!(ret(B516_1688, "arccos(0.7071)").ends_with("ArcCos"));
     assert_eq!(ret(B516_1688, "arcsin(0.5)"), "PushInt 30");
     // out of their domain: left to run
     assert_eq!(ret(B516_1688, "arcsin(2)"), "PushInt 2\nArcSin");
