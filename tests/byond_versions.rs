@@ -223,6 +223,58 @@ fn text2ascii_char_of_a_constant_folds() {
     }
 }
 
+/// Rarer ways to call a builtin, as DreamMaker writes them.
+#[test]
+fn rarer_forms_of_builtins() {
+    let v = |expr: &str| ret(B516_1688, expr);
+    // block() with a z, and with some of the second corner: the rest is null
+    assert_eq!(
+        v("block(a, 2, 3)"),
+        "GetVar arg(0)\nPushInt 2\nPushInt 3\nPushVal null\nPushVal null\nPushVal null\nBlockXYZ"
+    );
+    assert_eq!(
+        v("block(a, 2, 3, 4)"),
+        "GetVar arg(0)\nPushInt 2\nPushInt 3\nPushInt 4\nPushVal null\nPushVal null\nBlockXYZ"
+    );
+    // with nothing, of null
+    assert_eq!(v("time2text()"), "PushVal null\nPushVal null\nTime2Text");
+    assert_eq!(v("round()"), "PushVal null\nRound");
+    // outside `<<` these are their first argument; the others are worked out and dropped
+    assert_eq!(v("browse(a)"), "GetVar arg(0)");
+    assert_eq!(
+        v("browse(a, 1, 2)"),
+        "GetVar arg(0)\nPushInt 1\nPop\nPushInt 2\nPop"
+    );
+    assert_eq!(v("output(a, 1)"), "GetVar arg(0)\nPushInt 1\nPop");
+    assert_eq!(v("load_resource(a)"), "GetVar arg(0)");
+    // as values
+    assert_eq!(
+        v("shutdown(a)"),
+        "GetVar arg(0)\nPushVal null\nShutdownArgs"
+    );
+    assert_eq!(v("statpanel(a)"), "GetVar arg(0)\nStatPanelCheck\nGetFlag");
+    assert_eq!(v("animate(a)"), "GetVar arg(0)\nNullAnimate");
+    assert_eq!(
+        v("animate(a, time = 5)"),
+        "PushInt 1\nGetVar arg(0)\nPushVal \"time\"\nPushInt 5\nNewAssocList 2\nAnimate"
+    );
+    // what comes after animate()'s object without a name isn't even worked out
+    assert_eq!(v("animate(a, a + 1, 3)"), "GetVar arg(0)\nNullAnimate");
+    // initial() of an argument, src or `.`
+    assert_eq!(v("initial(a)"), "GetVar initial(arg(0))");
+    assert_eq!(v("initial(src)"), "GetVar initial(src)");
+    assert_eq!(v("initial(.)"), "GetVar initial(dot)");
+    // a key with no value in alist() has null
+    assert_eq!(
+        v("alist(a, \"k\" = 2)"),
+        "GetVar arg(0)\nPushVal null\nPushVal \"k\"\nPushInt 2\nNewAlist 2"
+    );
+    assert_eq!(
+        v("alist(1, 2)"),
+        "PushInt 1\nPushVal null\nPushInt 2\nPushVal null\nNewAlist 2"
+    );
+}
+
 /// Before 515.1644 an integer literal beyond 2147483647 is 2147483647.
 #[test]
 fn an_integer_literal_beyond_an_i32_before_515_1644() {

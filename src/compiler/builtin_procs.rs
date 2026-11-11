@@ -347,17 +347,69 @@ pub(super) fn emit(
     if !super::versions::has_builtin(compiler.byond, name) {
         return Ok(None);
     }
+    // Outside `<<`, browse(), browse_rsc(), output() and load_resource() are
+    // their first argument (the others are worked out and dropped)
+    if matches!(name, "browse" | "browse_rsc" | "output" | "load_resource") && !args.is_empty() {
+        push_args(compiler, &args[..1])?;
+        for arg in &args[1..] {
+            push_args(compiler, std::slice::from_ref(arg))?;
+            compiler.emit_ins(Instruction::Pop);
+        }
+        return Ok(Some(EvalKind::Stack));
+    }
+    // shutdown(Addr, Natural) as a value
+    if name == "shutdown" && matches!(args.len(), 1 | 2) {
+        push_args(compiler, args)?;
+        for _ in args.len()..2 {
+            push_null(compiler);
+        }
+        compiler.emit_ins(Instruction::ShutdownArgs);
+        return Ok(Some(EvalKind::Stack));
+    }
+    // animate() as a value: as on its own line, with what it gives kept
+    if name == "animate" && !args.is_empty() {
+        if emit_statement_builtin(compiler, name, args)? {
+            let dropped = compiler.nodes.pop();
+            debug_assert!(matches!(
+                dropped,
+                Some(crate::Node::Instruction(Instruction::Pop, _))
+            ));
+            return Ok(Some(EvalKind::Stack));
+        }
+    }
+    // statpanel(Panel) as a value: whether the panel is the one shown
+    if name == "statpanel" && args.len() == 1 {
+        push_args(compiler, args)?;
+        compiler.emit_ins(Instruction::StatPanelCheck);
+        compiler.emit_ins(Instruction::GetFlag);
+        return Ok(Some(EvalKind::Stack));
+    }
     if is_unsupported_proc(name) {
         return Err(CompileError::UnsupportedBuiltin {
             proc: name.to_owned(),
         });
     }
 
-    // block(x1, y1, z1, x2, y2): z2 is left null
-    if name == "block" && args.len() == 5 {
+    // block(x1, y1, z1), and with an x2 and a y2: what's left out is null
+    if name == "block" && (3..=5).contains(&args.len()) {
         push_args(compiler, args)?;
-        compiler.emit_ins(Instruction::PushVal(operands::Value::Null));
+        for _ in args.len()..6 {
+            compiler.emit_ins(Instruction::PushVal(operands::Value::Null));
+        }
         compiler.emit_ins(Instruction::BlockXYZ);
+        return Ok(Some(EvalKind::Stack));
+    }
+    // time2text() and round() with nothing: of null
+    if (name == "time2text" || name == "round") && args.is_empty() {
+        push_null(compiler);
+        if name == "time2text" {
+            push_null(compiler);
+        }
+        compiler.emit_ins(if name == "time2text" {
+            Instruction::Time2Text
+        } else {
+            Instruction::Round
+        });
         return Ok(Some(EvalKind::Stack));
     }
 
@@ -437,6 +489,15 @@ pub(super) fn emit(
 
                 // a static or const var read through a field (`initial(a.s)`)
                 EvalKind::Var(global @ Variable::Global(_)) => Variable::Initial(Box::new(global)),
+
+                // initial(x) of a local, an argument, src, usr or `.`
+                EvalKind::Var(
+                    var @ (Variable::Local(_)
+                    | Variable::Arg(_)
+                    | Variable::Src
+                    | Variable::Usr
+                    | Variable::Dot),
+                ) => Variable::Initial(Box::new(var)),
 
                 // initial(L[k]), as in initial(D.vars[name])
                 EvalKind::ListRef => {
@@ -1080,11 +1141,13 @@ pub(super) fn emit_statement_builtin(
             compiler.emit_ins(Instruction::Pop);
         }
         // Stops the animation (with one named argument it's a step instead);
-        // so does animate(x, null)
+        // so does animate(x, null), or anything else after x that isn't
+        // named: it isn't even worked out
         "animate"
-            if n == 2
-                && matches!(&args[1], Expression::Base { term, follow }
-                    if follow.is_empty() && matches!(term.elem, Term::Null)) =>
+            if n >= 2
+                && args.iter().all(|a| {
+                    !matches!(a, Expression::AssignOp { .. }) && arglist_inner(a).is_none()
+                }) =>
         {
             push_args(compiler, &args[..1])?;
             compiler.emit_ins(Instruction::NullAnimate);
@@ -1130,6 +1193,23 @@ pub(super) fn emit_statement_builtin(
         "statpanel" if n == 1 => {
             push_args(compiler, args)?;
             compiler.emit_ins(Instruction::StatPanelCheck);
+        }
+        // statpanel(Panel, Name, Value); statpanel(Panel, Value) has no name
+        "statpanel" if n == 2 || n == 3 => {
+            push_args(compiler, &args[..1])?;
+            if n == 2 {
+                push_null(compiler);
+            }
+            push_args(compiler, &args[1..])?;
+            compiler.emit_ins(Instruction::StatPanel);
+        }
+        // browse(), browse_rsc() and output() outside `<<`: each argument is
+        // worked out and dropped
+        "browse" | "browse_rsc" | "output" | "load_resource" if n >= 1 => {
+            for arg in args {
+                push_args(compiler, std::slice::from_ref(arg))?;
+                compiler.emit_ins(Instruction::Pop);
+            }
         }
         _ => return Ok(false),
     }

@@ -706,6 +706,30 @@ pub(super) fn emit_alist(
     args: Vec<Expression>,
 ) -> Result<EvalKind, CompileError> {
     let n = args.len() as u32;
+    let positional = |arg: &Expression| {
+        !matches!(
+            arg,
+            Expression::AssignOp {
+                op: dreammaker::ast::AssignOp::Assign,
+                ..
+            }
+        ) && super::builtin_procs::arglist_inner(arg).is_none()
+    };
+    if args.iter().any(positional) {
+        // A key with no value has null: `alist(a, "k" = b)`
+        for arg in args {
+            let lone = positional(&arg);
+            match args::emit(compiler, args::ArgsContext::List, vec![arg])? {
+                args::ArgsResult::Assoc if !lone => {}
+                args::ArgsResult::Normal if lone => {
+                    compiler.emit_ins(Instruction::PushVal(crate::operands::Value::Null));
+                }
+                _ => return Err(CompileError::AmbiguousListConstructor),
+            }
+        }
+        compiler.emit_ins(Instruction::NewAlist(n));
+        return Ok(EvalKind::Stack);
+    }
     match args::emit(compiler, args::ArgsContext::List, args)? {
         args::ArgsResult::Assoc => {}
         args::ArgsResult::Normal if n == 0 => {}

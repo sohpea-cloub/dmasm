@@ -413,6 +413,64 @@ fn a_global_const_named_through_global_folds() {
     assert!(code("switch (a)\n\t\tif (global.gc)\n\t\t\treturn 1").contains("Switch default => "));
 }
 
+/// Builtins on their own line that have forms of their own there.
+#[test]
+fn rarer_forms_of_builtins_on_their_own_line() {
+    let code = |body: &str| {
+        compile(
+            &format!("/proc/f(a, b, c)\n\t{body}\n\treturn a\n"),
+            "",
+            "f",
+        )
+    };
+    // statpanel(Panel, Value) has no name
+    assert_has(
+        &code("statpanel(a, b)"),
+        &[
+            "GetVar arg(0)",
+            "PushVal null",
+            "GetVar arg(1)",
+            "StatPanel",
+            "GetVar arg(0)",
+            "Ret",
+        ],
+    );
+    assert_has(
+        &code("statpanel(a, b, c)"),
+        &[
+            "GetVar arg(0)",
+            "GetVar arg(1)",
+            "GetVar arg(2)",
+            "StatPanel",
+            "GetVar arg(0)",
+            "Ret",
+        ],
+    );
+    // outside `<<` each argument is worked out and dropped
+    assert_has(
+        &code("output(a, b)"),
+        &[
+            "GetVar arg(0)",
+            "Pop",
+            "GetVar arg(1)",
+            "Pop",
+            "GetVar arg(0)",
+            "Ret",
+        ],
+    );
+    // anything after animate()'s object that isn't named stops the animation
+    assert_has(
+        &code("animate(a, b, c)"),
+        &[
+            "GetVar arg(0)",
+            "NullAnimate",
+            "Pop",
+            "GetVar arg(0)",
+            "Ret",
+        ],
+    );
+}
+
 /// What `pick()` gives a weight of 0 isn't one of its cases, and a switch's
 /// case of -0 is 0.
 #[test]
