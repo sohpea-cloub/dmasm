@@ -86,6 +86,8 @@ struct Initializer<'a> {
     params: Vec<(String, String)>,
     /// Deferred `/type::var` reference through an ancestor absent from source.
     scoped_late: bool,
+    /// Root var declared with an absolute path (`/var/name`).
+    absolute: bool,
 }
 
 impl Initializer<'_> {
@@ -172,6 +174,7 @@ impl Snapshot {
                         sized: false,
                         params: params.clone(),
                         scoped_late: false,
+                        absolute: false,
                     });
             }
         }
@@ -214,6 +217,7 @@ impl Snapshot {
             chains: self.include_chains(procs),
             computed,
             declared,
+            defaults: procs,
             ..Walk::default()
         };
         walk.ty(self, self.tree.root(), &mut statics);
@@ -409,6 +413,9 @@ type Statics<'a> = HashMap<(usize, String, usize), Vec<Initializer<'a>>>;
 enum Waiting<'a> {
     Initializer(Initializer<'a>),
     Type(TypeRef<'a>),
+    /// A type's default for a var. It sets nothing here, but holds back
+    /// `::` reads of the type's vars until it compiles.
+    Default(Initializer<'a>),
 }
 
 const LIST_PROCS: &[&str] = &[
@@ -466,16 +473,22 @@ fn visited_late(byond: crate::ByondVersion, t: TypeRef) -> bool {
 }
 
 /// Approximate DreamMaker's initializer order from source declarations.
-/// Root `/var/name` declarations come first; subtypes follow their first
-/// occurrence. Proc and verb declarations each form a group at their first
+/// Root `/var/name` declarations come first, as one tree of their paths
+/// (`absolute_order`); subtypes follow their first occurrence. Proc and verb declarations each form a group at their first
 /// declaration, with statics after each proc. Overrides keep their source
 /// positions; `var` blocks use tree order (`var_blocks`).
 ///
 /// Defer initializers until referenced procs, types and values are ready.
 /// Type dependencies include `__TYPE__`, list element types and the declared
 /// types of member receivers, including `world` and parameters. Root types
-/// also wait for their parents. `finish` visits late built-ins, then makes
-/// ordered passes over deferred entries as their dependencies become ready.
+/// also wait for their parents. A read of a type's var by `::` (`type::x`,
+/// `/type::x`, `VAR::x`) and a changed prefab (`/type{...}`) also wait for
+/// every var default of that type and its ancestors to compile; a default
+/// such as `kind = /own/type` compiles a pass late.
+///
+/// `finish` gives the root's absolute vars their turn, visits late built-ins,
+/// then makes ordered passes over deferred entries as their dependencies
+/// become ready.
 #[derive(Default)]
 struct Walk<'a> {
     now: Vec<Initializer<'a>>,
@@ -485,6 +498,10 @@ struct Walk<'a> {
     finishing: bool,
     /// Final pass, allowing `/type::var` reads through unnamed ancestors.
     last: bool,
+    /// Whether types' var defaults are followed (only where the order
+    /// matters), and how many of each type's still wait.
+    defaults: bool,
+    defaults_waiting: HashMap<usize, usize>,
     /// Computed initializers and completed initializers, keyed by scope and name.
     computed: HashSet<(String, String)>,
     set: HashSet<(String, String)>,
@@ -540,9 +557,82 @@ impl<'a> Walk<'a> {
         at
     }
 
+    /// The place of each root var declared with an absolute path. Their
+    /// paths make one tree, like the vars of a `var` block: `/var/list/a`
+    /// and `/var/list/b` come together where the first is, whatever is
+    /// declared between them.
+    fn absolute_order(&mut self, snapshot: &Snapshot, root: TypeRef<'a>) -> HashMap<&'a str, u32> {
+        enum Entry<'n> {
+            Node(String, Vec<Entry<'n>>),
+            Var(&'n str),
+        }
+        fn number<'n>(entries: &[Entry<'n>], order: &mut HashMap<&'n str, u32>) {
+            for entry in entries {
+                match entry {
+                    Entry::Node(_, below) => number(below, order),
+                    Entry::Var(name) => {
+                        let place = order.len() as u32;
+                        order.insert(*name, place);
+                    }
+                }
+            }
+        }
+        let mut declared: Vec<(Vec<u32>, Vec<String>, &'a str)> = vec![];
+        for (name, var) in root.get().vars.iter() {
+            let Some(declaration) = &var.declaration else {
+                continue;
+            };
+            if declaration.location.file == FileId::BUILTINS
+                || !self.absolute(snapshot, declaration.location)
+            {
+                continue;
+            }
+            // (`/var/global/list/name = ...`: what lies between var and the name)
+            let line = self
+                .line(snapshot, declaration.location)
+                .unwrap_or_default();
+            let text = line.trim_start();
+            let end = text
+                .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '/'))
+                .unwrap_or(text.len());
+            let mut parts: Vec<String> = text[..end]
+                .split('/')
+                .filter(|part| !part.is_empty())
+                .skip(1)
+                .map(str::to_owned)
+                .collect();
+            parts.pop();
+            declared.push((self.at(declaration.location), parts, name.as_str()));
+        }
+        declared.sort();
+        let mut tree: Vec<Entry<'a>> = vec![];
+        for (_, parts, name) in declared {
+            let mut level = &mut tree;
+            for part in parts {
+                let found = level
+                    .iter()
+                    .position(|entry| matches!(entry, Entry::Node(name, _) if *name == part));
+                let at = found.unwrap_or_else(|| {
+                    level.push(Entry::Node(part, vec![]));
+                    level.len() - 1
+                });
+                level = match &mut level[at] {
+                    Entry::Node(_, below) => below,
+                    Entry::Var(_) => unreachable!(),
+                };
+            }
+            level.push(Entry::Var(name));
+        }
+        let mut order = HashMap::new();
+        number(&tree, &mut order);
+        order
+    }
+
     fn ty(&mut self, snapshot: &'a Snapshot, t: TypeRef<'a>, statics: &mut Statics<'a>) {
         enum Item<'a> {
             Var(&'a str, &'a dreammaker::objtree::TypeVar),
+            /// A value the type gives a var declared above it.
+            Default(&'a str, &'a dreammaker::objtree::TypeVar),
             Proc(&'a str),
             /// Statics of one override.
             Statics(&'a str, usize),
@@ -551,16 +641,28 @@ impl<'a> Walk<'a> {
             Type(TypeRef<'a>),
         }
         let mut items: Vec<(Vec<u32>, Item<'a>)> = vec![];
+        // Root `/var/name` declarations precede other declarations, in the
+        // order of the one tree their paths make.
+        let absolute = if t.is_root() {
+            self.absolute_order(snapshot, t)
+        } else {
+            HashMap::new()
+        };
         for (name, var) in t.get().vars.iter() {
             if let Some(declaration) = &var.declaration {
                 if declaration.location.file != FileId::BUILTINS {
-                    let mut at = self.var_at(snapshot, declaration.location);
-                    // Root `/var/name` declarations precede other declarations.
-                    if t.is_root() && self.absolute(snapshot, declaration.location) {
-                        at.insert(0, 0);
-                    }
+                    let at = match absolute.get(name.as_str()) {
+                        Some(place) => vec![0, *place],
+                        None => self.var_at(snapshot, declaration.location),
+                    };
                     items.push((at, Item::Var(name.as_str(), var)));
                 }
+            } else if self.defaults
+                && var.value.location.file != FileId::BUILTINS
+                && var.value.expression.as_ref().is_some_and(|e| !literal(e))
+            {
+                let at = self.at(var.value.location);
+                items.push((at, Item::Default(name.as_str(), var)));
             }
         }
         let mut declared: HashMap<dreammaker::ast::ProcDeclKind, Vec<u32>> = HashMap::new();
@@ -626,10 +728,14 @@ impl<'a> Walk<'a> {
                             sized: false,
                             params: vec![],
                             scoped_late: false,
+                            absolute: t.is_root() && self.absolute(snapshot, declaration.location),
                         };
                         self.add(snapshot, init);
+                    } else {
+                        self.var_default(snapshot, t, name, var);
                     }
                 }
+                Item::Default(name, var) => self.var_default(snapshot, t, name, var),
                 Item::Proc(name) => {
                     self.procs.insert((t.index().index(), name.to_owned()));
                 }
@@ -731,6 +837,68 @@ impl<'a> Walk<'a> {
                 .is_none_or(|e| self.ready(snapshot, init, e))
     }
 
+    /// Track a type's var default that cannot compile yet: until it does,
+    /// `::` reads of that type's vars, and of its subtypes', wait.
+    fn var_default(
+        &mut self,
+        snapshot: &'a Snapshot,
+        t: TypeRef<'a>,
+        name: &str,
+        var: &'a dreammaker::objtree::TypeVar,
+    ) {
+        let Some(expression) = var.value.expression.as_ref().filter(|e| !literal(e)) else {
+            return;
+        };
+        if !self.defaults {
+            return;
+        }
+        // (a default that itself reads a var by `::` holds nothing back:
+        // a type's defaults may read one another that way)
+        let mut scoped = false;
+        terms(expression, &mut |seen| {
+            scoped |= matches!(seen, Seen::StaticFieldOf(_))
+        });
+        if scoped {
+            return;
+        }
+        let init = Initializer {
+            scope: format!("default:{}", t.get().path),
+            name: name.to_owned(),
+            location: var.value.location,
+            ty: t,
+            declared: String::new(),
+            expression: Some(expression),
+            constant: None,
+            proc_path: None,
+            siblings: vec![],
+            earlier: vec![],
+            sized: false,
+            params: vec![],
+            scoped_late: false,
+            absolute: false,
+        };
+        if !self.is_ready(snapshot, &init) {
+            *self.defaults_waiting.entry(t.index().index()).or_default() += 1;
+            self.later.push(Waiting::Default(init));
+        }
+    }
+
+    /// Whether a var default of `t` or of one of its ancestors still waits.
+    fn defaults_wait(&self, t: TypeRef) -> bool {
+        let mut at = Some(t);
+        while let Some(t) = at.filter(|t| !t.is_root()) {
+            if self
+                .defaults_waiting
+                .get(&t.index().index())
+                .is_some_and(|n| *n > 0)
+            {
+                return true;
+            }
+            at = t.parent_type();
+        }
+        false
+    }
+
     fn run(&mut self, init: Initializer<'a>) {
         self.set.insert((init.scope.clone(), init.name.clone()));
         self.now.push(init);
@@ -741,6 +909,25 @@ impl<'a> Walk<'a> {
     /// dependencies in encounter order.
     fn finish(mut self, snapshot: &'a Snapshot, statics: &mut Statics<'a>) -> Vec<Initializer<'a>> {
         self.finishing = true;
+        let unnamed: Vec<TypeRef<'a>> = snapshot.tree.iter_types().collect();
+        for t in unnamed {
+            if self.first(t).is_none() {
+                self.types.insert(t.index().index());
+            }
+        }
+        // The root's absolute vars lead the tree, and the late built-in
+        // types follow them: in the first pass they have their turns in
+        // that order, before everything else that waits.
+        let mut waiting = std::mem::take(&mut self.later);
+        let lead = waiting
+            .iter()
+            .take_while(|entry| matches!(entry, Waiting::Initializer(init) if init.absolute))
+            .count();
+        let rest = waiting.split_off(lead);
+        let mut progress = false;
+        for entry in waiting {
+            progress |= self.turn(snapshot, statics, entry);
+        }
         let root = snapshot.tree.root();
         let mut late: Vec<(usize, Vec<u32>, TypeRef<'a>)> = vec![];
         let children: Vec<TypeRef<'a>> = root.children().collect();
@@ -761,35 +948,18 @@ impl<'a> Walk<'a> {
         for (_, _, t) in late {
             self.ty(snapshot, t, statics);
         }
-        let unnamed: Vec<TypeRef<'a>> = snapshot.tree.iter_types().collect();
-        for t in unnamed {
-            if self.first(t).is_none() {
-                self.types.insert(t.index().index());
-            }
+        for entry in rest {
+            progress |= self.turn(snapshot, statics, entry);
         }
 
-        let mut waiting = std::mem::take(&mut self.later);
-        while !waiting.is_empty() {
-            let mut progress = false;
-            for entry in waiting {
-                match entry {
-                    Waiting::Initializer(init) if self.is_ready(snapshot, &init) => {
-                        self.run(init);
-                        progress = true;
-                    }
-                    Waiting::Initializer(init) => self.later.push(Waiting::Initializer(init)),
-                    Waiting::Type(t) => {
-                        self.ty(snapshot, t, statics);
-                        progress = true;
-                    }
-                }
+        loop {
+            let waiting = std::mem::take(&mut self.later);
+            if waiting.is_empty() {
+                break;
             }
-            waiting = std::mem::take(&mut self.later);
             if !progress && !self.last {
                 self.last = true;
-                continue;
-            }
-            if !progress {
+            } else if !progress {
                 for entry in waiting {
                     if let Waiting::Initializer(init) = entry {
                         self.run(init);
@@ -797,8 +967,36 @@ impl<'a> Walk<'a> {
                 }
                 break;
             }
+            progress = false;
+            for entry in waiting {
+                progress |= self.turn(snapshot, statics, entry);
+            }
         }
         self.now
+    }
+
+    /// Give one waiting entry its turn in a pass: run or visit it if it is
+    /// ready, else keep it waiting. Whether it was ready.
+    fn turn(
+        &mut self,
+        snapshot: &'a Snapshot,
+        statics: &mut Statics<'a>,
+        entry: Waiting<'a>,
+    ) -> bool {
+        match entry {
+            Waiting::Initializer(init) if self.is_ready(snapshot, &init) => self.run(init),
+            Waiting::Default(init) if self.is_ready(snapshot, &init) => {
+                if let Some(n) = self.defaults_waiting.get_mut(&init.ty.index().index()) {
+                    *n -= 1;
+                }
+            }
+            Waiting::Type(t) => self.ty(snapshot, t, statics),
+            entry => {
+                self.later.push(entry);
+                return false;
+            }
+        }
+        true
     }
 
     /// Resolve `name` from the initializer scope and check that its declaration
@@ -982,13 +1180,35 @@ impl<'a> Walk<'a> {
                 Seen::StaticFieldOf(Term::Ident(name))
                     if ["type", "src"].contains(&name.as_str()) =>
                 {
-                    ready &= self.types.contains(&t.index().index());
+                    ready &= self.types.contains(&t.index().index()) && !self.defaults_wait(t);
                     return;
                 }
-                // `/type::var` is read once that type has been visited
+                // `/type::var` is read once that type has been visited and
+                // every var default of it and of its ancestors has compiled
                 Seen::StaticFieldOf(Term::Prefab(prefab)) => {
                     let found = snapshot.tree.find(&prefab.path.to_string());
-                    ready &= found.is_none_or(|found| self.types.contains(&found.index().index()));
+                    ready &= found.is_none_or(|found| {
+                        self.types.contains(&found.index().index()) && !self.defaults_wait(found)
+                    });
+                    return;
+                }
+                // `VAR::x` reads through the var's declared type
+                Seen::StaticFieldOf(Term::Ident(name)) => {
+                    let declared = |ty: TypeRef| {
+                        ty.get_var_declaration(name)
+                            .map(|d| d.get().var_type.type_path.to_string())
+                    };
+                    let found = declared(t)
+                        .or_else(|| declared(root))
+                        .and_then(|path| {
+                            snapshot
+                                .tree
+                                .find(&format!("/{}", path.trim_start_matches('/')))
+                        })
+                        .filter(|found| !found.is_root());
+                    ready &= found.is_none_or(|found| {
+                        self.types.contains(&found.index().index()) && !self.defaults_wait(found)
+                    });
                     return;
                 }
                 Seen::StaticFieldOf(_) => return,
@@ -1035,10 +1255,17 @@ impl<'a> Walk<'a> {
                 Term::GlobalCall(name, _) => call(name, true),
                 Term::Prefab(prefab) | Term::NewPrefab { prefab, .. } => {
                     let text = prefab.path.to_string();
-                    !(text.starts_with('/')
-                        || text.starts_with(".proc/")
-                        || text.starts_with(".verb/"))
-                        || path(&text)
+                    // (`/type{...}` needs the type's var defaults, as `::` does)
+                    let changed = !prefab.vars.is_empty()
+                        && snapshot
+                            .tree
+                            .find(&text)
+                            .is_some_and(|found| self.defaults_wait(found));
+                    !changed
+                        && (!(text.starts_with('/')
+                            || text.starts_with(".proc/")
+                            || text.starts_with(".verb/"))
+                            || path(&text))
                 }
                 Term::NewImplicit { .. } => self.declared_ready(snapshot, declared),
                 _ => true,
@@ -1145,6 +1372,24 @@ fn var_blocks(lines: &[String], declared: &[u32]) -> HashMap<u32, Vec<u32>> {
             (*line, place)
         })
         .collect()
+}
+
+/// Whether an expression is a plain literal, which waits for nothing.
+fn literal(expression: &Expression) -> bool {
+    match expression {
+        Expression::Base { term, follow } => {
+            follow.is_empty()
+                && matches!(
+                    term.elem,
+                    Term::Null
+                        | Term::Int(_)
+                        | Term::Float(_)
+                        | Term::String(_)
+                        | Term::Resource(_)
+                )
+        }
+        _ => false,
+    }
 }
 
 /// Visit every term in an expression.

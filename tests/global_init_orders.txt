@@ -417,6 +417,129 @@ var/h = f()
 /proc/f()
 	return 1
 var/x = list(2)
+=== ll2: e x a c b d p q
+/var/list/a = list(/datum/z)
+/var/b = list(/datum/z)
+/var/list/c = list(/datum/z)
+/var/global/list/d = list(/datum/z)
+/var/e = list(1)
+/datum/z
+/particles/var/static/p = list(1)
+/world/proc/w()
+	var/static/q = world.fps
+var/x = list(2)
+=== mm3: s2 x s g t
+/datum/c
+	var/v = 5
+	var/own = /datum/c
+/datum/c/proc/p()
+	var/static/s = list(nameof(type::v))
+	var/static/s2 = list(1)
+var/g = f()
+/turf/proc/p()
+	var/static/t = list(nameof(type::x))
+/proc/f()
+	return 1
+var/x = list(2)
+=== nn1: s2 x s g t
+/datum/c
+	var/v = 5
+/datum/c/proc/p()
+	var/static/s = list(nameof(type::v))
+	var/static/s2 = list(1)
+/datum
+	var/kind = 5
+var/g = f()
+/turf/proc/p()
+	var/static/t = list(nameof(type::x))
+/proc/f()
+	return 1
+var/x = list(2)
+=== nn2: s2 x s g t
+/datum/c
+	var/v = 5
+/datum/c/proc/p()
+	var/static/s = list(nameof(type::v))
+	var/static/s2 = list(1)
+/datum/proc/q()
+	return 1
+var/g = f()
+/turf/proc/p()
+	var/static/t = list(nameof(type::x))
+/proc/f()
+	return 1
+var/x = list(2)
+=== nn3: s2 x s g t
+/datum/c
+	var/v = 5
+/datum/c/proc/p()
+	var/static/s = list(nameof(type::v))
+	var/static/s2 = list(1)
+/datum/c
+	var/w = 5
+var/g = f()
+/turf/proc/p()
+	var/static/t = list(nameof(type::x))
+/proc/f()
+	return 1
+var/x = list(2)
+=== nn4: s2 x s g t
+/datum/c
+	var/v = 5
+/datum/c/proc/p()
+	var/static/s = list(nameof(type::v))
+	var/static/s2 = list(1)
+/datum/d
+	var/w = 5
+var/g = f()
+/turf/proc/p()
+	var/static/t = list(nameof(type::x))
+/proc/f()
+	return 1
+var/x = list(2)
+=== nn5: s2 x s g t
+/datum/c
+	var/v = 5
+/datum/c/proc/p()
+	var/static/s = list(nameof(type::v))
+	var/static/s2 = list(1)
+var/g = f()
+/turf/proc/p()
+	var/static/t = list(nameof(type::x))
+/proc/f()
+	return 1
+var/x = list(2)
+/datum/c
+	var/w = 5
+=== nn6: s2 x y s g t
+/datum/c
+	var/v = 5
+/datum/c/proc/p()
+	var/static/s = list(nameof(type::v))
+	var/static/s2 = list(1)
+var/g = f()
+/turf/proc/p()
+	var/static/t = list(nameof(type::x))
+/proc/f()
+	return 1
+var/x = list(2)
+/datum
+	var/kind = 5
+var/y = list(3)
+=== nn7: s2 x s g t
+/datum
+	var/kind = 5
+/datum/c
+	var/v = 5
+/datum/c/proc/p()
+	var/static/s = list(nameof(type::v))
+	var/static/s2 = list(1)
+var/g = f()
+/turf/proc/p()
+	var/static/t = list(nameof(type::x))
+/proc/f()
+	return 1
+var/x = list(2)
 === p1: x b a
 var/a = b
 var/x = list(1)
