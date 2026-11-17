@@ -236,8 +236,57 @@ pub(super) fn reparent(
     });
 }
 
-/// Recompile procs whose code changes with inherited consts or declared
-/// var types after a parent change.
+/// Find inherited declaration and default changes after reparenting.
+/// Declaration and const changes affect named references; other defaults
+/// affect only `type::var` references.
+fn inherited_changes(
+    old: &Snapshot,
+    new: &Snapshot,
+    types: &HashSet<&str>,
+) -> (HashSet<String>, HashSet<String>) {
+    let mut declared = HashSet::new();
+    let mut defaults = HashSet::new();
+    for path in types {
+        let (Some(o), Some(n)) = (old.find_type(path), new.find_type(path)) else {
+            continue;
+        };
+        let mut names = HashSet::new();
+        for t in [o, n] {
+            let mut at = Some(t);
+            while let Some(t) = at {
+                names.extend(t.get().vars.keys().map(|name| name.as_str()));
+                at = t.parent_type();
+            }
+        }
+        for name in names {
+            let declaration = |t: TypeRef| {
+                t.get_var_declaration(name).map(|d| {
+                    let var_type = &d.get().var_type;
+                    (format!("{var_type:?}"), var_type.flags.is_const())
+                })
+            };
+            let value = |t: TypeRef| {
+                t.get_value(name)
+                    .map(|v| format!("{:?}{:?}", v.constant, v.expression))
+            };
+            let (before, after) = (declaration(o), declaration(n));
+            let is_const = after.as_ref().is_some_and(|(_, is_const)| *is_const);
+            if before != after {
+                declared.insert(name.to_owned());
+            } else if value(o) != value(n) {
+                if is_const {
+                    declared.insert(name.to_owned());
+                } else {
+                    defaults.insert(name.to_owned());
+                }
+            }
+        }
+    }
+    (declared, defaults)
+}
+
+/// Recompile procs whose code changes with inherited consts, declared
+/// var types or `type::var` defaults after a parent change.
 pub(super) fn reparented_users(
     old: &Snapshot,
     new: &Snapshot,
@@ -252,14 +301,40 @@ pub(super) fn reparented_users(
     if types.is_empty() {
         return;
     }
+    // Find references to changed declarations and embedded defaults.
+    let (declared, defaults) = inherited_changes(old, new, &types);
+    let named: Vec<String> = declared.iter().map(|name| format!("{name:?}")).collect();
+    let fields: Vec<String> = defaults
+        .iter()
+        .map(|name| format!("StaticField({name:?})"))
+        .collect();
+    let mut files = HashMap::new();
     let reloaded: HashSet<ProcKey> = changes.reloads.iter().map(|r| r.proc.clone()).collect();
     let mut reloads = vec![];
     for key in new.procs.keys() {
         let Some((type_path, _)) = key.path.rsplit_once('/') else {
             continue;
         };
-        if !types.contains(type_path) {
-            continue;
+        let own = types.contains(type_path);
+        if !own {
+            if named.is_empty() && fields.is_empty() {
+                continue;
+            }
+            let Some((_, value)) = new.find(key) else {
+                continue;
+            };
+            // Skip AST formatting when the source cannot reference a default.
+            if named.is_empty() && !new.source_has(value, "::", &mut files) {
+                continue;
+            }
+            let text = format!("{:?}{:?}", value.code, value.parameters);
+            if !named
+                .iter()
+                .chain(&fields)
+                .any(|name| text.contains(name.as_str()))
+            {
+                continue;
+            }
         }
         let Some(old_key) = old_key(realigned, key) else {
             continue;
@@ -271,6 +346,17 @@ pub(super) fn reparented_users(
             continue;
         };
         if before.nodes == after.nodes {
+            continue;
+        }
+        // Line remapping handles procs whose bytecode is otherwise unchanged.
+        let code = |nodes: &[Node]| -> Vec<Node> {
+            nodes
+                .iter()
+                .filter(|n| !matches!(n, Node::Instruction(Instruction::DbgLine(_), _)))
+                .cloned()
+                .collect()
+        };
+        if !own && code(&before.nodes) == code(&after.nodes) {
             continue;
         }
         match new.compile_code(key).and_then(|mut reload| {

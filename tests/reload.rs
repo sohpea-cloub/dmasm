@@ -1481,6 +1481,23 @@ fn a_new_parent_type_is_a_reparent_and_nothing_else() {
 }
 
 #[test]
+fn a_new_parent_type_recompiles_other_procs_that_hold_what_it_inherits() {
+    // Reparenting changes embedded constants in otherwise unchanged /mob procs.
+    let before = "/datum/a\n\tvar/size = 1\n\tvar/const/limit = 3\n\
+                  /datum/b\n\tvar/size = 2\n\tvar/const/limit = 7\n\
+                  /datum/a/c\n\
+                  /mob/proc/sized()\n\treturn /datum/a/c::size\n\
+                  /mob/proc/capped(datum/a/c/thing)\n\treturn thing.limit\n\
+                  /mob/proc/other(datum/a/thing)\n\treturn thing.limit + /datum/a::size\n";
+    let after = before.replace("/datum/a/c\n", "/datum/a/c\n\tparent_type = /datum/b\n");
+    let changes = changes("parent-type-users", before, &after);
+    assert_eq!(changes.reparented.len(), 1, "{:?}", changes.reparented);
+    let mut procs = reloaded(&changes);
+    procs.sort();
+    assert_eq!(procs, [key("/mob/capped", 0), key("/mob/sized", 0)]);
+}
+
+#[test]
 fn a_removed_name_goes_back_to_each_types_own() {
     let before =
         "/obj/thing\n\tname = \"box\"\n/obj/thing/big_one\n/obj/thing/small\n\ttext = \"s\"\n";
