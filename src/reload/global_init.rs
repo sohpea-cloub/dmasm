@@ -80,6 +80,12 @@ struct Initializer<'a> {
     siblings: Vec<String>,
     /// Earlier proc statics, as (name, same-name declaration index).
     earlier: Vec<(String, u32)>,
+    /// Sized list declaration (`var/L[8]`), ready when visited.
+    sized: bool,
+    /// For a proc static: the proc's parameters and their declared types.
+    params: Vec<(String, String)>,
+    /// Deferred `/type::var` reference through an ancestor absent from source.
+    scoped_late: bool,
 }
 
 impl Initializer<'_> {
@@ -114,6 +120,11 @@ impl Snapshot {
                 continue;
             }
             let proc_path = crate::compiler::proc_path(ty, name, *index == 0);
+            let params: Vec<(String, String)> = value
+                .parameters
+                .iter()
+                .map(|p| (p.name.to_string(), p.var_type.type_path.to_string()))
+                .collect();
             // Number same-named statics as the compiler does, including consts.
             let siblings: Vec<String> = found
                 .iter()
@@ -158,17 +169,55 @@ impl Snapshot {
                         proc_path: Some(proc_path.clone()),
                         siblings: siblings.clone(),
                         earlier: before,
+                        sized: false,
+                        params: params.clone(),
+                        scoped_late: false,
                     });
             }
         }
         // Without proc statics, only change detection matters; ignore file order.
+        // The globals and statics whose initializers run code
+        let mut computed = HashSet::new();
+        let mut declared: HashMap<FileId, Vec<u32>> = HashMap::new();
+        for t in self.tree.iter_types() {
+            for (name, var) in t.get().vars.iter() {
+                let Some(declaration) = &var.declaration else {
+                    continue;
+                };
+                if procs && declaration.location.file != FileId::BUILTINS {
+                    declared
+                        .entry(declaration.location.file)
+                        .or_default()
+                        .push(declaration.location.line);
+                }
+                let flags = declaration.var_type.flags;
+                if declaration.location.file != FileId::BUILTINS
+                    && !flags.is_const()
+                    && (t.is_root() || flags.is_static())
+                    && var_constant(var).is_none()
+                {
+                    let scope = if t.is_root() {
+                        String::new()
+                    } else {
+                        t.get().path.clone()
+                    };
+                    computed.insert((scope, name.to_string()));
+                }
+            }
+        }
+        for init in statics.values().flatten() {
+            if init.constant.is_none() {
+                computed.insert((init.scope.clone(), init.name.clone()));
+            }
+        }
         let mut walk = Walk {
             chains: self.include_chains(procs),
+            computed,
+            declared,
             ..Walk::default()
         };
         walk.ty(self, self.tree.root(), &mut statics);
-        walk.now.extend(walk.later);
-        walk.now
+        walk.finish(self, &mut statics)
     }
 
     /// Map files to their first location in the include stream: the include
@@ -356,23 +405,97 @@ fn changed(new: &Snapshot, before: &[Initializer<'_>], after: &[Initializer<'_>]
 /// Proc statics indexed by type, proc name and definition index.
 type Statics<'a> = HashMap<(usize, String, usize), Vec<Initializer<'a>>>;
 
-/// Approximate DreamMaker's initializer order by walking declarations in
-/// source order, entering subtypes where they first appear. Group statics
-/// of declared procs at the first proc declaration; visit overrides at
-/// their own locations. Root `/var/name` declarations come first.
+/// Initializer or type deferred until its dependencies are visited.
+enum Waiting<'a> {
+    Initializer(Initializer<'a>),
+    Type(TypeRef<'a>),
+}
+
+const LIST_PROCS: &[&str] = &[
+    "Add",
+    "Copy",
+    "Cut",
+    "Find",
+    "Insert",
+    "Join",
+    "Remove",
+    "RemoveAll",
+    "Splice",
+    "Swap",
+];
+
+/// Built-in types visited at their first source occurrence.
+const CORE_TYPES: &[&str] = &[
+    "/datum", "/atom", "/area", "/turf", "/obj", "/mob", "/image", "/client", "/world",
+];
+
+/// Built-in types visited after the source walk, in this order.
+const LATE_TYPES: &[&str] = &[
+    "/sound",
+    "/icon",
+    "/matrix",
+    "/database",
+    "/exception",
+    "/regex",
+    "/mutable_appearance",
+    "/dm_filter",
+    "/generator",
+    "/particles",
+];
+
+/// First build visiting `/mutable_appearance` at the root after `/image`,
+/// rather than with late built-in types.
+const MUTABLE_APPEARANCE_AT_ROOT: u32 = 1643;
+/// First build deferring initializers that call list procs.
+const LIST_PROCS_WAIT: u32 = 1648;
+/// First build running deferred `/type::var` reads through unnamed ancestors last.
+const SCOPED_RUN_LAST: u32 = 1685;
+
+/// Whether this build defers a root built-in type until after the source walk.
+fn visited_late(byond: crate::ByondVersion, t: TypeRef) -> bool {
+    let path = t.get().path.as_str();
+    if CORE_TYPES.contains(&path) || super::reparent::builtin_base(t).as_deref() != Some(path) {
+        return false;
+    }
+    if path == "/mutable_appearance" {
+        return !byond.at_least(MUTABLE_APPEARANCE_AT_ROOT);
+    }
+    t.parent_type()
+        .filter(|p| !p.is_root())
+        .is_none_or(|p| p.get().path == "/datum")
+}
+
+/// Approximate DreamMaker's initializer order from source declarations.
+/// Root `/var/name` declarations come first; subtypes follow their first
+/// occurrence. Proc and verb declarations each form a group at their first
+/// declaration, with statics after each proc. Overrides keep their source
+/// positions; `var` blocks use tree order (`var_blocks`).
 ///
-/// Defer initializers referencing globals, procs or types not yet visited,
-/// including their own type, a later type, a list's type or element type,
-/// and other statics in the same proc. Run deferred initializers last in
-/// the same relative order.
+/// Defer initializers until referenced procs, types and values are ready.
+/// Type dependencies include `__TYPE__`, list element types and the declared
+/// types of member receivers, including `world` and parameters. Root types
+/// also wait for their parents. `finish` visits late built-ins, then makes
+/// ordered passes over deferred entries as their dependencies become ready.
 #[derive(Default)]
 struct Walk<'a> {
     now: Vec<Initializer<'a>>,
-    later: Vec<Initializer<'a>>,
+    /// Deferred entries in encounter order.
+    later: Vec<Waiting<'a>>,
+    /// The initial source walk is complete.
+    finishing: bool,
+    /// Final pass, allowing `/type::var` reads through unnamed ancestors.
+    last: bool,
+    /// Computed initializers and completed initializers, keyed by scope and name.
+    computed: HashSet<(String, String)>,
+    set: HashSet<(String, String)>,
+    /// Visited global and static declarations.
+    passed: HashSet<(String, String)>,
+    /// Var declaration lines and ordering keys within `var` blocks.
+    declared: HashMap<FileId, Vec<u32>>,
+    blocks: HashMap<FileId, HashMap<u32, Vec<u32>>>,
     /// Visited type indices and (type index, proc name) pairs.
     types: HashSet<usize>,
     procs: HashSet<(usize, String)>,
-    globals: HashSet<String>,
     /// First source location of each type.
     first: HashMap<usize, Option<Vec<u32>>>,
     /// File locations in the include stream (see `include_chains`).
@@ -393,19 +516,45 @@ impl<'a> Walk<'a> {
         at
     }
 
+    /// Declaration order key, adjusted for `var` block traversal.
+    fn var_at(&mut self, snapshot: &Snapshot, location: Location) -> Vec<u32> {
+        if !self.blocks.contains_key(&location.file) {
+            self.line(snapshot, location);
+            let blocks = match (
+                self.texts.get(&location.file),
+                self.declared.get(&location.file),
+            ) {
+                (Some(lines), Some(declared)) => var_blocks(lines, declared),
+                _ => HashMap::new(),
+            };
+            self.blocks.insert(location.file, blocks);
+        }
+        let mut at = match self.chains.get(&location.file) {
+            Some(chain) => chain.clone(),
+            None => vec![u32::MAX],
+        };
+        if let Some(place) = self.blocks[&location.file].get(&location.line) {
+            at.extend(place);
+        }
+        at.extend([location.line, location.column as u32]);
+        at
+    }
+
     fn ty(&mut self, snapshot: &'a Snapshot, t: TypeRef<'a>, statics: &mut Statics<'a>) {
         enum Item<'a> {
             Var(&'a str, &'a dreammaker::objtree::TypeVar),
             Proc(&'a str),
-            /// Statics of the type's declared procs, or of one override.
-            Statics(Option<(&'a str, usize)>),
+            /// Statics of one override.
+            Statics(&'a str, usize),
+            /// The procs the type declares, or its verbs.
+            Declared(dreammaker::ast::ProcDeclKind),
             Type(TypeRef<'a>),
         }
         let mut items: Vec<(Vec<u32>, Item<'a>)> = vec![];
         for (name, var) in t.get().vars.iter() {
             if let Some(declaration) = &var.declaration {
                 if declaration.location.file != FileId::BUILTINS {
-                    let mut at = self.at(declaration.location);
+                    let mut at = self.var_at(snapshot, declaration.location);
                     // Root `/var/name` declarations precede other declarations.
                     if t.is_root() && self.absolute(snapshot, declaration.location) {
                         at.insert(0, 0);
@@ -414,7 +563,7 @@ impl<'a> Walk<'a> {
                 }
             }
         }
-        let mut declared: Option<Vec<u32>> = None;
+        let mut declared: HashMap<dreammaker::ast::ProcDeclKind, Vec<u32>> = HashMap::new();
         for (name, p) in t.get().procs.iter() {
             for (index, value) in p
                 .value
@@ -423,17 +572,23 @@ impl<'a> Walk<'a> {
                 .filter(|(_, v)| v.location.file != FileId::BUILTINS)
             {
                 let at = self.at(value.location);
-                items.push((at.clone(), Item::Proc(name.as_str())));
-                if index == 0 && p.declaration.is_some() {
-                    declared = Some(declared.map_or(at.clone(), |d| d.min(at)));
-                } else {
-                    items.push((at, Item::Statics(Some((name.as_str(), index)))));
+                match &p.declaration {
+                    Some(declaration) if index == 0 => {
+                        let first = declared.entry(declaration.kind).or_insert(at.clone());
+                        if at < *first {
+                            *first = at;
+                        }
+                    }
+                    _ => {
+                        items.push((at.clone(), Item::Proc(name.as_str())));
+                        items.push((at, Item::Statics(name.as_str(), index)));
+                    }
                 }
             }
         }
-        // Insert after the first proc declaration.
-        if let Some(at) = declared {
-            items.push((at, Item::Statics(None)));
+        // At the first declaration of a proc, and of a verb
+        for (kind, at) in declared {
+            items.push((at, Item::Declared(kind)));
         }
         for child in t.children() {
             if let Some(at) = self.first(child) {
@@ -446,6 +601,12 @@ impl<'a> Walk<'a> {
                 Item::Var(name, var) => {
                     let declaration = var.declaration.as_ref().unwrap();
                     let flags = declaration.var_type.flags;
+                    let scope = if t.is_root() {
+                        String::new()
+                    } else {
+                        t.get().path.clone()
+                    };
+                    self.passed.insert((scope, name.to_owned()));
                     if !flags.is_const() && (t.is_root() || flags.is_static()) {
                         let init = Initializer {
                             scope: if t.is_root() {
@@ -462,66 +623,236 @@ impl<'a> Walk<'a> {
                             proc_path: None,
                             siblings: vec![],
                             earlier: vec![],
+                            sized: false,
+                            params: vec![],
+                            scoped_late: false,
                         };
                         self.add(snapshot, init);
-                    }
-                    if t.is_root() {
-                        self.globals.insert(name.to_owned());
                     }
                 }
                 Item::Proc(name) => {
                     self.procs.insert((t.index().index(), name.to_owned()));
                 }
-                Item::Statics(definition) => {
-                    let mut own = vec![];
-                    match definition {
-                        Some((name, index)) => own.extend(
-                            statics
-                                .remove(&(t.index().index(), name.to_owned(), index))
-                                .unwrap_or_default(),
-                        ),
-                        None => {
-                            for (name, p) in t.get().procs.iter() {
-                                if p.declaration.is_some() {
-                                    own.extend(
-                                        statics
-                                            .remove(&(
-                                                t.index().index(),
-                                                name.as_str().to_owned(),
-                                                0,
-                                            ))
-                                            .unwrap_or_default(),
-                                    );
-                                }
-                            }
-                        }
-                    }
+                Item::Statics(name, index) => {
+                    let mut own = statics
+                        .remove(&(t.index().index(), name.to_owned(), index))
+                        .unwrap_or_default();
                     own.sort_by_cached_key(|init| self.at(init.location));
                     for init in own {
                         self.add(snapshot, init);
                     }
                 }
-                Item::Type(child) => self.ty(snapshot, child, statics),
+                // Visit each declared proc or verb followed by its statics.
+                Item::Declared(kind) => {
+                    let mut procs: Vec<(Vec<u32>, &str)> = t
+                        .get()
+                        .procs
+                        .iter()
+                        .filter(|(_, p)| p.declaration.as_ref().is_some_and(|d| d.kind == kind))
+                        .filter_map(|(name, p)| {
+                            let first = p.value.first()?;
+                            (first.location.file != FileId::BUILTINS)
+                                .then(|| (self.at(first.location), name.as_str()))
+                        })
+                        .collect();
+                    procs.sort();
+                    for (_, name) in procs {
+                        self.procs.insert((t.index().index(), name.to_owned()));
+                        let mut own = statics
+                            .remove(&(t.index().index(), name.to_owned(), 0))
+                            .unwrap_or_default();
+                        own.sort_by_cached_key(|init| self.at(init.location));
+                        for init in own {
+                            self.add(snapshot, init);
+                        }
+                    }
+                }
+                Item::Type(child) => self.enter(snapshot, child, statics),
             }
         }
         self.types.insert(t.index().index());
     }
 
-    fn add(&mut self, snapshot: &'a Snapshot, init: Initializer<'a>) {
-        let ready = init.constant.is_some()
-            || (self.declared_ready(snapshot, &init.declared)
-                && init
-                    .expression
-                    .is_none_or(|e| self.ready(snapshot, &init, e)));
-        if ready {
-            self.now.push(init);
+    /// Visit a subtype, deferring late built-ins and root types with unvisited parents.
+    fn enter(&mut self, snapshot: &'a Snapshot, t: TypeRef<'a>, statics: &mut Statics<'a>) {
+        let path = t.get().path.as_str();
+        let at_root = t.parent_path().is_some_and(|p| p.is_root());
+        if self.finishing || !at_root || CORE_TYPES.contains(&path) {
+            return self.ty(snapshot, t, statics);
+        }
+        if visited_late(snapshot.byond, t) {
+            // `finish` visits late built-ins before other deferred entries.
+            return;
+        }
+        match t.parent_type().filter(|p| !p.is_root()) {
+            Some(parent) if !self.types.contains(&parent.index().index()) => {
+                self.later.push(Waiting::Type(t));
+            }
+            _ => self.ty(snapshot, t, statics),
+        }
+    }
+
+    fn add(&mut self, snapshot: &'a Snapshot, mut init: Initializer<'a>) {
+        init.sized = self
+            .line(snapshot, init.location)
+            .is_some_and(|line| line.contains(&format!("{}[", init.name)));
+        if init.constant.is_some() || self.is_ready(snapshot, &init) {
+            self.run(init);
         } else {
-            self.later.push(init);
+            if let Some(expression) = init.expression {
+                let mut scoped = vec![];
+                terms(expression, &mut |seen| {
+                    if let Seen::StaticFieldOf(Term::Prefab(prefab)) = seen {
+                        scoped.extend(snapshot.tree.find(&prefab.path.to_string()));
+                    }
+                });
+                for found in scoped
+                    .into_iter()
+                    .filter(|_| snapshot.byond.at_least(SCOPED_RUN_LAST))
+                {
+                    let mut above = found.parent_type();
+                    while let Some(t) = above.filter(|t| !t.is_root()) {
+                        init.scoped_late |= self.first(t).is_none();
+                        above = t.parent_type();
+                    }
+                }
+            }
+            self.later.push(Waiting::Initializer(init));
+        }
+    }
+
+    fn is_ready(&self, snapshot: &Snapshot, init: &Initializer) -> bool {
+        if init.scoped_late && !self.last {
+            return false;
+        }
+        self.declared_ready(snapshot, &init.declared)
+            && init
+                .expression
+                .is_none_or(|e| self.ready(snapshot, init, e))
+    }
+
+    fn run(&mut self, init: Initializer<'a>) {
+        self.set.insert((init.scope.clone(), init.name.clone()));
+        self.now.push(init);
+    }
+
+    /// Visit late built-ins and mark unnamed types as visited. Process deferred
+    /// entries in ordered passes until no progress is possible, then run cyclic
+    /// dependencies in encounter order.
+    fn finish(mut self, snapshot: &'a Snapshot, statics: &mut Statics<'a>) -> Vec<Initializer<'a>> {
+        self.finishing = true;
+        let root = snapshot.tree.root();
+        let mut late: Vec<(usize, Vec<u32>, TypeRef<'a>)> = vec![];
+        let children: Vec<TypeRef<'a>> = root.children().collect();
+        for child in children {
+            let path = child.get().path.as_str();
+            if !visited_late(snapshot.byond, child) {
+                continue;
+            }
+            if let Some(at) = self.first(child) {
+                let rank = LATE_TYPES
+                    .iter()
+                    .position(|late| *late == path)
+                    .unwrap_or(LATE_TYPES.len());
+                late.push((rank, at, child));
+            }
+        }
+        late.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+        for (_, _, t) in late {
+            self.ty(snapshot, t, statics);
+        }
+        let unnamed: Vec<TypeRef<'a>> = snapshot.tree.iter_types().collect();
+        for t in unnamed {
+            if self.first(t).is_none() {
+                self.types.insert(t.index().index());
+            }
+        }
+
+        let mut waiting = std::mem::take(&mut self.later);
+        while !waiting.is_empty() {
+            let mut progress = false;
+            for entry in waiting {
+                match entry {
+                    Waiting::Initializer(init) if self.is_ready(snapshot, &init) => {
+                        self.run(init);
+                        progress = true;
+                    }
+                    Waiting::Initializer(init) => self.later.push(Waiting::Initializer(init)),
+                    Waiting::Type(t) => {
+                        self.ty(snapshot, t, statics);
+                        progress = true;
+                    }
+                }
+            }
+            waiting = std::mem::take(&mut self.later);
+            if !progress && !self.last {
+                self.last = true;
+                continue;
+            }
+            if !progress {
+                for entry in waiting {
+                    if let Waiting::Initializer(init) = entry {
+                        self.run(init);
+                    }
+                }
+                break;
+            }
+        }
+        self.now
+    }
+
+    /// Resolve `name` from the initializer scope and check that its declaration
+    /// and computed value are ready. `finishing` treats all declarations as visited.
+    fn value_set(&self, init: &Initializer, name: &str, global: bool, finishing: bool) -> bool {
+        let set = |scope: &str| {
+            let key = (scope.to_owned(), name.to_owned());
+            (finishing || self.passed.contains(&key))
+                && (!self.computed.contains(&key) || self.set.contains(&key))
+        };
+        let t = init.ty;
+        if !global {
+            // Another static of the proc, by any of its declarations
+            if let Some(proc_path) = &init.proc_path {
+                if let Some((_, number)) = init.earlier.iter().rev().find(|(n, _)| n == name) {
+                    let key = (format!("proc:{proc_path}#{number}"), name.to_owned());
+                    return !self.computed.contains(&key) || self.set.contains(&key);
+                }
+                if init.siblings.iter().any(|s| s == name) {
+                    let prefix = format!("proc:{proc_path}#");
+                    return finishing
+                        && !self.computed.iter().any(|(scope, n)| {
+                            n == name
+                                && scope.starts_with(&prefix)
+                                && !self.set.contains(&(scope.clone(), n.clone()))
+                        });
+                }
+            }
+            if let Some(declaration) = t
+                .get_var_declaration(name)
+                .filter(|d| !t.is_root() && !d.ty().is_root())
+            {
+                let flags = declaration.get().var_type.flags;
+                return !flags.is_static() || flags.is_const() || set(&declaration.ty().get().path);
+            }
+        }
+        match t.tree().root().get().vars.get(name) {
+            Some(var)
+                if var.declaration.is_some() && var.value.location.file != FileId::BUILTINS =>
+            {
+                set("")
+            }
+            _ => true,
         }
     }
 
     /// Whether the declaration at `location` starts with `/var`
     fn absolute(&mut self, snapshot: &Snapshot, location: Location) -> bool {
+        self.line(snapshot, location)
+            .is_some_and(|line| line.trim_start().starts_with("/var/"))
+    }
+
+    /// The source line at `location`
+    fn line(&mut self, snapshot: &Snapshot, location: Location) -> Option<&str> {
         let lines = self.texts.entry(location.file).or_insert_with(|| {
             let Some(root) = &snapshot.root else {
                 return vec![];
@@ -537,7 +868,7 @@ impl<'a> Walk<'a> {
         });
         lines
             .get(location.line.saturating_sub(1) as usize)
-            .is_some_and(|line| line.trim_start().starts_with("/var/"))
+            .map(String::as_str)
     }
 
     /// First type definition, member declaration or subtype declaration.
@@ -583,9 +914,10 @@ impl<'a> Walk<'a> {
             .is_some_and(|t| self.types.contains(&t.index().index()))
     }
 
-    /// Whether references in an initializer have been visited.
+    /// Check that referenced declarations and values are ready.
     fn ready(&self, snapshot: &Snapshot, init: &Initializer, expression: &Expression) -> bool {
-        let (t, declared, siblings) = (init.ty, init.declared.as_str(), &init.siblings);
+        let finishing = self.finishing;
+        let (t, declared) = (init.ty, init.declared.as_str());
         // A proc is visited once its definition has been passed.
         let before =
             |ty: TypeRef, name: &str| self.procs.contains(&(ty.index().index(), name.to_owned()));
@@ -614,6 +946,10 @@ impl<'a> Walk<'a> {
                 }
                 return true;
             }
+            // Sized declarations parse as `new /list(8)` but need no deferral.
+            if !proc && ty == "/list" && init.sized {
+                return true;
+            }
             match snapshot.tree.find(ty.trim_end_matches('/')) {
                 Some(found) if proc => {
                     let name = path.rsplit('/').next().unwrap_or_default();
@@ -639,22 +975,6 @@ impl<'a> Walk<'a> {
             }
             true
         };
-        let global = |name: &str| {
-            if !t.is_root()
-                && t.get_var_declaration(name)
-                    .is_some_and(|d| !d.ty().is_root())
-            {
-                return true;
-            }
-            match root.get().vars.get(name) {
-                Some(var)
-                    if var.declaration.is_some() && var.value.location.file != FileId::BUILTINS =>
-                {
-                    self.globals.contains(name)
-                }
-                _ => true,
-            }
-        };
         terms(expression, &mut |seen| {
             let term = match seen {
                 Seen::Term(term) => term,
@@ -665,11 +985,52 @@ impl<'a> Walk<'a> {
                     ready &= self.types.contains(&t.index().index());
                     return;
                 }
+                // `/type::var` is read once that type has been visited
+                Seen::StaticFieldOf(Term::Prefab(prefab)) => {
+                    let found = snapshot.tree.find(&prefab.path.to_string());
+                    ready &= found.is_none_or(|found| self.types.contains(&found.index().index()));
+                    return;
+                }
                 Seen::StaticFieldOf(_) => return,
+                // A member is read through the var's declared type, which
+                // has to have been visited
+                Seen::MemberOf(name, proc) => {
+                    let declared = |ty: TypeRef| {
+                        ty.get_var_declaration(name)
+                            .map(|d| d.get().var_type.type_path.to_string())
+                    };
+                    let param = init.params.iter().find(|(param, _)| param == name);
+                    let path = match param
+                        .map(|(_, path)| path.clone())
+                        .or_else(|| declared(t))
+                        .or_else(|| declared(root))
+                    {
+                        Some(path) => path,
+                        None if name == "world" => "world".to_owned(),
+                        None => String::new(),
+                    };
+                    let path = format!("/{}", path.trim_start_matches('/'));
+                    let list = path == "/list" || path.starts_with("/list/");
+                    // List proc calls on list or untyped receivers wait until the end.
+                    if proc.is_some_and(|proc| LIST_PROCS.contains(&proc))
+                        && (list || path == "/")
+                        && snapshot.byond.at_least(LIST_PROCS_WAIT)
+                    {
+                        ready &= finishing;
+                    } else if path != "/" && !list {
+                        ready &= snapshot
+                            .tree
+                            .find(&path)
+                            .is_none_or(|found| self.types.contains(&found.index().index()));
+                    }
+                    return;
+                }
             };
             ready &= match term {
-                Term::Ident(name) if siblings.iter().any(|s| s == name.as_str()) => false,
-                Term::Ident(name) | Term::GlobalIdent(name) => global(name),
+                // The containing type is still being visited.
+                Term::__TYPE__ => self.types.contains(&t.index().index()),
+                Term::Ident(name) => self.value_set(init, name, false, finishing),
+                Term::GlobalIdent(name) => self.value_set(init, name, true, finishing),
                 Term::Call(name, _) => call(name, false),
                 Term::GlobalCall(name, _) => call(name, true),
                 Term::Prefab(prefab) | Term::NewPrefab { prefab, .. } => {
@@ -687,12 +1048,114 @@ impl<'a> Walk<'a> {
     }
 }
 
+/// Where the vars declared inside the block of a `var` line are visited.
+///
+/// DreamMaker reads such a block as a tree, in which entries that start
+/// with the same path share a node: `list/a`, `b` and `list/c` under
+/// `var/global` are visited as a, c, b. Declarations that each have their
+/// own `var` are visited in their order.
+///
+/// For each line of `declared` (1-based) inside such a block: the line of
+/// the `var`, then the line each node on the way to it first appears on.
+/// Put before the declaration's own line, they sort it into its place.
+fn var_blocks(lines: &[String], declared: &[u32]) -> HashMap<u32, Vec<u32>> {
+    let indent = |line: &str| line.len() - line.trim_start().len();
+    // The path a line starts with, and whether it holds nothing else
+    let path = |line: &str| -> (Vec<String>, bool) {
+        let text = line.trim_start();
+        let end = text
+            .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '/'))
+            .unwrap_or(text.len());
+        let rest = text[end..].trim_start();
+        let parts = text[..end]
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .map(str::to_owned)
+            .collect();
+        (parts, rest.is_empty() || rest.starts_with("//"))
+    };
+    // Each declaration's `var` line, and the parts between it and the var's
+    // name with the line each is written on
+    let mut found: Vec<(u32, u32, Vec<(String, u32)>)> = vec![];
+    for &line in declared {
+        let Some(own) = lines.get(line.saturating_sub(1) as usize) else {
+            continue;
+        };
+        let (mut parts, _) = path(own);
+        parts.pop();
+        if parts.iter().any(|part| part == "var") {
+            continue;
+        }
+        let mut parts: Vec<(String, u32)> = parts.into_iter().map(|part| (part, line)).collect();
+        let mut within = indent(own);
+        let mut root = None;
+        for above in (0..line.saturating_sub(1) as usize).rev() {
+            if within == 0 {
+                break;
+            }
+            let text = lines[above].trim();
+            if text.is_empty()
+                || text.starts_with('#')
+                || text.starts_with("//")
+                || text.starts_with("/*")
+                || text.starts_with('*')
+                || indent(&lines[above]) >= within
+            {
+                continue;
+            }
+            // (what isn't a path alone isn't a line the block hangs from)
+            let (header, alone) = path(&lines[above]);
+            if !alone || header.is_empty() {
+                continue;
+            }
+            within = indent(&lines[above]);
+            let number = above as u32 + 1;
+            let var = header.iter().position(|part| part == "var");
+            let below = match var {
+                Some(var) => &header[var + 1..],
+                None => &header[..],
+            };
+            parts.splice(0..0, below.iter().map(|part| (part.clone(), number)));
+            if var.is_some() {
+                root = Some(number);
+                break;
+            }
+        }
+        if let Some(root) = root {
+            found.push((line, root, parts));
+        }
+    }
+    // The line each node first appears on
+    let mut first: HashMap<(u32, Vec<&str>), u32> = HashMap::new();
+    for (_, root, parts) in &found {
+        for n in 0..parts.len() {
+            let node: Vec<&str> = parts[..=n].iter().map(|(part, _)| part.as_str()).collect();
+            let at = first.entry((*root, node)).or_insert(parts[n].1);
+            *at = (*at).min(parts[n].1);
+        }
+    }
+    found
+        .iter()
+        .map(|(line, root, parts)| {
+            let mut place = vec![*root];
+            for n in 0..parts.len() {
+                let node: Vec<&str> = parts[..=n].iter().map(|(part, _)| part.as_str()).collect();
+                place.push(first[&(*root, node)]);
+            }
+            (*line, place)
+        })
+        .collect()
+}
+
 /// Visit every term in an expression.
 /// `terms` supplies an expression's immediate terms.
 enum Seen<'e> {
     Term(&'e Term),
     /// Receiver of a `::` expression.
     StaticFieldOf(&'e Term),
+    /// A var read for one of its members (`world.fps`, `thing.f()`), and
+    /// the proc when it's a call.
+    MemberOf(&'e str, Option<&'e str>),
 }
 
 fn terms(expression: &Expression, each: &mut dyn FnMut(Seen)) {
@@ -706,6 +1169,14 @@ fn terms(expression: &Expression, each: &mut dyn FnMut(Seen)) {
                     each(Seen::Term(&Term::GlobalCall(proc.clone(), args.clone())));
                 }
             }
+            // (`global.name` reads a global var)
+            if let (Term::Ident(name), Some(dreammaker::ast::Follow::Field(_, field))) =
+                (&term.elem, follow.first().map(|f| &f.elem))
+            {
+                if name.as_str() == "global" {
+                    each(Seen::Term(&Term::GlobalIdent(field.clone())));
+                }
+            }
             if follow.iter().any(|f| {
                 matches!(
                     f.elem,
@@ -714,6 +1185,17 @@ fn terms(expression: &Expression, each: &mut dyn FnMut(Seen)) {
                 )
             }) {
                 each(Seen::StaticFieldOf(&term.elem));
+            }
+            if let Term::Ident(name) = &term.elem {
+                match follow.first().map(|f| &f.elem) {
+                    Some(dreammaker::ast::Follow::Field(..)) => {
+                        each(Seen::MemberOf(name.as_str(), None))
+                    }
+                    Some(dreammaker::ast::Follow::Call(_, proc, _)) => {
+                        each(Seen::MemberOf(name.as_str(), Some(proc.as_str())))
+                    }
+                    _ => {}
+                }
             }
             term_and_within(&term.elem, each);
             for f in follow.iter() {

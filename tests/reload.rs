@@ -2898,6 +2898,77 @@ var/datum/h3 = list(3)
     }
 }
 
+/// DreamMaker initializer-order fixtures: `=== name: order`, then source.
+/// Expected orders match 516.1688; three rules below vary across 515.1637–516.1689.
+#[test]
+fn global_init_orders_dreammaker_gave() {
+    let cases: Vec<(&str, &str, &str)> = include_str!("global_init_orders.txt")
+        .split("=== ")
+        .filter(|case| !case.is_empty())
+        .map(|case| {
+            let (head, source) = case.split_once('\n').unwrap();
+            let (name, order) = head.split_once(": ").unwrap();
+            (name, order, source)
+        })
+        .collect();
+    let order_on = |name: &str, source: &str, byond: Option<(u32, u32)>| {
+        let world = World::new(&format!("global_init_given_{name}"), source);
+        let options = ParseOptions {
+            byond,
+            ..ParseOptions::default()
+        };
+        let snapshot = Snapshot::parse(&world.dir.join("world.dme"), &options).unwrap();
+        let nodes = snapshot.global_init_proc().unwrap().code.nodes;
+        let set: Vec<String> = nodes
+            .iter()
+            .filter_map(|node| match node {
+                Node::Instruction(Instruction::SetVar(dmasm::Variable::Global(var)), ()) => {
+                    Some(String::from_utf8_lossy(&var.name.0).into_owned())
+                }
+                _ => None,
+            })
+            .collect();
+        set.join(" ")
+    };
+    let mut wrong = vec![];
+    for (name, order, source) in &cases {
+        let ours = order_on(name, source, Some((516, 1688)));
+        if ours != *order {
+            wrong.push(format!("{name}: {ours} for {order}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+
+    let source = |name: &str| cases.iter().find(|case| case.0 == name).unwrap().2;
+    // 515 doesn't make a call to a list's proc wait
+    assert_eq!(
+        order_on("gg1", source("gg1"), Some((515, 1647))),
+        "colors hair z x"
+    );
+    assert_eq!(
+        order_on("gg1", source("gg1"), Some((516, 1648))),
+        "colors z x hair"
+    );
+    // Before 516.1685 `/type::var` runs in its turn among what waits
+    assert_eq!(
+        order_on("jj1", source("jj1"), Some((516, 1684))),
+        "x y g a h"
+    );
+    assert_eq!(
+        order_on("jj1", source("jj1"), Some((516, 1685))),
+        "x y g h a"
+    );
+    // Before 515.1643 /mutable_appearance is one of the late types
+    assert_eq!(
+        order_on("y8", source("y8"), Some((515, 1642))),
+        "i ar t o m am a d c y s ic ma db dq e r mu df ge p z"
+    );
+    assert_eq!(
+        order_on("y8", source("y8"), Some((515, 1643))),
+        "i ar t o m am a d c y s ic ma db dq e r df ge p z mu"
+    );
+}
+
 /// Preserve the build's order and place additions after their preceding
 /// var in dmasm's order.
 #[test]
@@ -2931,6 +3002,26 @@ fn global_init_in_the_builds_order() {
     // The build's order can differ from source order.
     assert_eq!(order(&["c", "b", "a"]), "c b a x");
     assert_eq!(order(&["b", "a", "c"]), "b a x c");
+
+    // A new dependency on a later global must precede downstream initializers.
+    let changes = changes_of(
+        "global_init_built_order_reads_later",
+        "var/a = 10\nvar/b = a\nvar/c = -3.25\n",
+        "var/a = c + 1\nvar/b = a\nvar/c = -3.25\n",
+    );
+    let init = changes.global_init.as_ref().expect("no global init proc");
+    let nodes = init.in_built_order(|var, _| (var.name.0 == b"b").then_some(0));
+    let sets: Vec<String> = nodes
+        .iter()
+        .filter_map(|node| match node {
+            Node::Instruction(Instruction::SetVar(dmasm::Variable::Global(var)), ()) => {
+                Some(String::from_utf8_lossy(&var.name.0).into_owned())
+            }
+            _ => None,
+        })
+        .collect();
+    // (after the value its var-table entry is given)
+    assert_eq!(sets, ["a", "a", "b"]);
 }
 
 #[test]
