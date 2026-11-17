@@ -4,6 +4,7 @@ mod bytecode;
 pub mod compiler;
 pub mod debug_files;
 pub mod disassembler;
+pub mod dmb;
 mod instructions;
 mod list_operands;
 mod operands;
