@@ -35,7 +35,7 @@ pub struct ByondVersion {
 
 impl ByondVersion {
     /// The newest build the compiler was checked against.
-    pub const LATEST: ByondVersion = ByondVersion::new(516, 1688);
+    pub const LATEST: ByondVersion = ByondVersion::new(516, 1689);
 
     pub const fn new(major: u32, build: u32) -> Self {
         ByondVersion { major, build }

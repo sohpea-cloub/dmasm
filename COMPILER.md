@@ -33,7 +33,7 @@ Set `ProcSource::byond`, `compile_expr_for` or `reload::ParseOptions::byond` to 
 running world's build. `ByondVersion::read_as` configures version-specific parsing.
 Compatibility rules and thresholds are in `src/compiler/versions.rs`.
 
-Probes covered 515.1637, 515.1647, 516.1659, 516.1685 and 516.1688. Additional probes
+Probes covered 515.1637, 515.1647, 516.1659, 516.1685, 516.1688 and 516.1689. Additional probes
 located behavior changes across 515.1637–516.1660, and in 516.1664, 1668–1672, 1676,
 1681 and 1684.
 
