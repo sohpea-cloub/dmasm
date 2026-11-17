@@ -2969,59 +2969,43 @@ fn global_init_orders_dreammaker_gave() {
     );
 }
 
-/// Preserve the build's order and place additions after their preceding
-/// var in dmasm's order.
+/// A reload's global init proc sets every var in dmasm's own order, the
+/// ones the build had as well as the ones the reload adds.
 #[test]
-fn global_init_in_the_builds_order() {
-    let before = "var/a = list(1)\nvar/b = list(2)\nvar/c = list(3)\n";
-    let changes = changes(
-        "global_init_built_order",
-        before,
-        "var/a = list(1)\nvar/x = list(9)\nvar/b = list(2)\nvar/c = list(3)\n",
-    );
-    let init = changes.global_init.as_ref().expect("no global init proc");
-    let order = |built: &[&str]| {
-        let nodes = init.in_built_order(|var, _| {
-            built
-                .iter()
-                .position(|name| name.as_bytes() == var.name.0.as_slice())
-        });
-        let mut sets = vec![];
-        for node in &nodes {
-            if let Node::Instruction(Instruction::SetVar(dmasm::Variable::Global(var)), ()) = node {
-                sets.push(String::from_utf8_lossy(&var.name.0).into_owned());
-            }
-        }
+fn global_init_after_a_reload_is_in_dmasms_order() {
+    let sets = |changes: &Changes| -> Vec<String> {
+        let init = changes.global_init.as_ref().expect("no global init proc");
         assert!(matches!(
-            nodes.last(),
+            init.code.nodes.last(),
             Some(Node::Instruction(Instruction::End, ()))
         ));
-        sets.join(" ")
+        init.code
+            .nodes
+            .iter()
+            .filter_map(|node| match node {
+                Node::Instruction(Instruction::SetVar(dmasm::Variable::Global(var)), ()) => {
+                    Some(String::from_utf8_lossy(&var.name.0).into_owned())
+                }
+                _ => None,
+            })
+            .collect()
     };
-    assert_eq!(order(&["a", "b", "c"]), "a x b c");
-    // The build's order can differ from source order.
-    assert_eq!(order(&["c", "b", "a"]), "c b a x");
-    assert_eq!(order(&["b", "a", "c"]), "b a x c");
+    // An added global runs where it is declared
+    let added = changes(
+        "global_init_own_order",
+        "var/a = list(1)\nvar/b = list(2)\nvar/c = list(3)\n",
+        "var/a = list(1)\nvar/x = list(9)\nvar/b = list(2)\nvar/c = list(3)\n",
+    );
+    assert_eq!(sets(&added), ["a", "x", "b", "c"]);
 
-    // A new dependency on a later global must precede downstream initializers.
-    let changes = changes_of(
-        "global_init_built_order_reads_later",
+    // A global that was a constant and now reads a later one runs before
+    // the global that reads it (after the value its var-table entry is given)
+    let reads_later = changes_of(
+        "global_init_own_order_reads_later",
         "var/a = 10\nvar/b = a\nvar/c = -3.25\n",
         "var/a = c + 1\nvar/b = a\nvar/c = -3.25\n",
     );
-    let init = changes.global_init.as_ref().expect("no global init proc");
-    let nodes = init.in_built_order(|var, _| (var.name.0 == b"b").then_some(0));
-    let sets: Vec<String> = nodes
-        .iter()
-        .filter_map(|node| match node {
-            Node::Instruction(Instruction::SetVar(dmasm::Variable::Global(var)), ()) => {
-                Some(String::from_utf8_lossy(&var.name.0).into_owned())
-            }
-            _ => None,
-        })
-        .collect();
-    // (after the value its var-table entry is given)
-    assert_eq!(sets, ["a", "a", "b"]);
+    assert_eq!(sets(&reads_later), ["a", "a", "b"]);
 }
 
 #[test]

@@ -4,10 +4,11 @@
 //! table. A single proc evaluates the rest before map creation, using
 //! `<value> SetVar global` for each initializer.
 //!
-//! The ordering rules below approximate DreamMaker's. Preserve the build's
-//! order for existing initializers with `GlobalInit::in_built_order`; use
-//! dmasm's order to place additions. Exact ordering remains necessary before
-//! that step can be removed.
+//! The order the initializers run in is dmasm's own (`Walk`), for every one
+//! of them: nothing is taken from the build's proc. How DreamMaker orders
+//! them is complicated, and isn't reproduced step by step. The rules below
+//! give the same order on the codebases they were checked against, and can
+//! differ from a rebuild's in rare arrangements.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -26,8 +27,7 @@ use crate::{Instruction, Node};
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GlobalInit {
     /// Set changed var-table defaults first (null for newly computed values),
-    /// then run computed initializers in `Walk` order. This order is approximate;
-    /// `in_built_order` restores the world's existing initializer order.
+    /// then run computed initializers in `Walk` order.
     ///
     /// Each assignment uses `SetVar global(name)` with a scope: `""` for a
     /// global, the declaring type path for a type static, or `proc:PATH#N`
@@ -483,8 +483,8 @@ fn visited_late(byond: crate::ByondVersion, t: TypeRef) -> bool {
 /// types of member receivers, including `world` and parameters. Root types
 /// also wait for their parents. A read of a type's var by `::` (`type::x`,
 /// `/type::x`, `VAR::x`) and a changed prefab (`/type{...}`) also wait for
-/// every var default of that type and its ancestors to compile; a default
-/// such as `kind = /own/type` compiles a pass late.
+/// every var default of that type and its ancestors to be ready; a default
+/// such as `kind = /own/type` is ready a pass late.
 ///
 /// `finish` gives the root's absolute vars their turn, visits late built-ins,
 /// then makes ordered passes over deferred entries as their dependencies
@@ -1829,58 +1829,5 @@ impl GlobalInit {
         }
         out.code.nodes.append(&mut span);
         out
-    }
-
-    /// Restore the build's initializer order. `built` returns each var's
-    /// `SetVar` index in the original proc, using its scope and code location,
-    /// or `None` for a new or previously constant var. Place those vars after
-    /// the preceding var in dmasm's order. Keep var-table defaults first.
-    pub fn in_built_order(
-        &self,
-        mut built: impl FnMut(&GlobalVar, &[Node]) -> Option<usize>,
-    ) -> Vec<Node> {
-        // Split each assignment with its value code and current file.
-        let mut spans: Vec<(Option<usize>, Vec<Node>)> = vec![];
-        let (mut span, mut file) = (vec![], None);
-        for node in &self.code.nodes {
-            match node {
-                Node::Instruction(Instruction::End, _) => continue,
-                Node::Instruction(Instruction::DbgFile(_), _) => file = Some(node.clone()),
-                _ if span.is_empty() => span.extend(file.clone()),
-                _ => {}
-            }
-            span.push(node.clone());
-            if let Node::Instruction(Instruction::SetVar(Variable::Global(var)), _) = node {
-                let place = if spans.len() < self.table {
-                    None
-                } else {
-                    built(var, &span)
-                };
-                spans.push((place, std::mem::take(&mut span)));
-            }
-        }
-        let rest = spans.split_off(self.table.min(spans.len()));
-        // Use the preceding var's built position, or none at the start.
-        let mut ordered: Vec<((Option<usize>, bool, usize), Vec<Node>)> = vec![];
-        let mut after = None;
-        for (n, (place, span)) in rest.into_iter().enumerate() {
-            if place.is_some() {
-                after = place;
-            }
-            ordered.push(((after, place.is_none(), n), span));
-        }
-        ordered.sort_by_key(|(key, _)| *key);
-        let mut nodes: Vec<Node> = spans.into_iter().flat_map(|(_, span)| span).collect();
-        nodes.extend(ordered.into_iter().flat_map(|(_, span)| span));
-        nodes.push(Node::Instruction(Instruction::End, ()));
-        // Emit a file record when the file changes.
-        let mut file = None;
-        nodes.retain(|node| match node {
-            Node::Instruction(Instruction::DbgFile(name), _) => {
-                file.replace(name.clone()).as_ref() != Some(name)
-            }
-            _ => true,
-        });
-        nodes
     }
 }
