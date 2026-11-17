@@ -391,39 +391,29 @@ pub(super) fn emit(compiler: &mut Compiler<'_>, term: Term) -> Result<EvalKind, 
                     // Each weight's share is rounded down on its own
                     let mut threshold = 0u32;
                     let mut cases = vec![];
-                    // Zero numeric weights have no switch case, but their unreachable
-                    // value code is retained. Text weights convert to zero but still
-                    // produce a case, matching DreamMaker.
+                    // From 516.1689, zero weights retain a case at the previous
+                    // threshold. Earlier builds omit numeric-zero cases but
+                    // retain their value code. Text weights always have a case.
+                    let keeps_zero = compiler
+                        .byond
+                        .at_least(super::versions::PICK_ZERO_WEIGHT_KEPT);
                     let zero: Vec<bool> = args
                         .iter()
                         .map(|(w, _)| {
-                            w.as_ref()
-                                .is_some_and(|w| super::fold::number(compiler, w) == Some(0.0))
+                            !keeps_zero
+                                && w.as_ref()
+                                    .is_some_and(|w| super::fold::number(compiler, w) == Some(0.0))
                         })
                         .collect();
-                    // The final entry handles draws beyond all thresholds. A zero
-                    // weight there makes DreamMaker jump outside the proc. Select
-                    // the last entry whose weight is not a constant zero instead and warn.
+                    // Before 516.1689, a final zero weight causes an invalid jump.
+                    // Use the last nonzero entry as the default and warn.
                     let mut last = args.len() - 1;
                     if zero[last] {
                         if let Some(live) = zero.iter().rposition(|z| !z) {
-                            let bug = "pick() ends with a zero-weight entry";
-                            let ours = "; dmasm selects the last entry whose weight is not a constant zero instead of reproducing DreamMaker's invalid jump";
-                            // 516.1689 fixes the invalid jump; later differences
-                            // are compatibility warnings, not BYOND bugs.
-                            if compiler
-                                .byond
-                                .at_least(super::versions::PICK_ZERO_WEIGHT_KEPT)
-                            {
-                                compiler.warn(&format!("{bug}{ours}"));
-                            } else {
-                                compiler.warn_bug(
-                                    &format!(
-                                        "{bug}, where DreamMaker's code jumps out of the proc"
-                                    ),
-                                    ours,
-                                );
-                            }
+                            compiler.warn_bug(
+                                "pick() ends with a zero-weight entry, where DreamMaker's code jumps out of the proc",
+                                "; dmasm selects the last entry whose weight is not a constant zero instead of reproducing DreamMaker's invalid jump",
+                            );
                             last = live;
                         }
                     }

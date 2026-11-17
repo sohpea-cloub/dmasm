@@ -5,6 +5,11 @@ use dmasm::compiler::{compile_proc, ProcSource};
 /// Compiles proc `name` of type `ty` ("" for global procs) from `code`, and
 /// returns its instructions one per line, without debug info.
 fn compile(code: &str, ty: &str, name: &str) -> String {
+    compile_on(code, ty, name, dmasm::ByondVersion::LATEST)
+}
+
+/// Compile a proc for the specified BYOND version.
+fn compile_on(code: &str, ty: &str, name: &str, byond: dmasm::ByondVersion) -> String {
     let ctx = dreammaker::Context::default();
     let pp = dreammaker::Preprocessor::from_buffer(&ctx, "test.dm".into(), code.to_owned());
     let mut parser = dreammaker::Parser::new(&ctx, pp);
@@ -31,7 +36,7 @@ fn compile(code: &str, ty: &str, name: &str) -> String {
         file: "test.dm",
         debug_info: false,
         index: None,
-        byond: dmasm::ByondVersion::LATEST,
+        byond,
         file_names: None,
     };
     let compiled = compile_proc(&source).expect("compiles");
@@ -541,32 +546,68 @@ fn a_variable_times_itself_is_squared() {
     assert!(!shadowed.contains("PowSquare"), "{}", shadowed);
 }
 
-/// Zero-weight pick entries are omitted from the switch; -0 cases equal 0.
+/// Zero-weight pick() entries retain cases from 516.1689; -0 behaves as 0.
 #[test]
 fn a_pick_of_weight_0_and_a_case_of_minus_0() {
-    let code = compile(
-        "/proc/f(a, b)\n\treturn pick(1; a, 0; b, 2; \"c\")\n",
-        "",
-        "f",
-    );
-    // one case (a's third of the draw) and the default, with b's value still written
-    let table = code.lines().find(|l| l.starts_with("PickSwitch")).unwrap();
-    assert_eq!(table.matches("=>").count(), 2, "{}", table);
-    assert!(table.contains("21845 =>"), "{}", table);
+    let v = |build| dmasm::ByondVersion::new(516, build);
+    let middle = "/proc/f(a, b)\n\treturn pick(1; a, 0; b, 2; \"c\")\n";
+    let last = "/proc/f(a, b)\n\treturn pick(1; a, 0; b)\n";
+    let table = |code: &str| {
+        code.lines()
+            .find(|l| l.starts_with("PickSwitch"))
+            .unwrap()
+            .to_owned()
+    };
+
+    // 516.1689: b's case is at a's threshold, and the last entry is the default
+    let code = compile_on(middle, "", "f", v(1689));
+    let cases = table(&code);
+    assert_eq!(cases.matches("=>").count(), 3, "{}", cases);
+    assert_eq!(cases.matches("21845 =>").count(), 2, "{}", cases);
+    let code = compile_on(last, "", "f", v(1689));
+    let cases = table(&code);
+    assert_eq!(cases.matches("=>").count(), 2, "{}", cases);
+    assert!(cases.contains("65535 =>"), "{}", cases);
+    let target = cases
+        .split("default => ")
+        .nth(1)
+        .unwrap()
+        .split(',')
+        .next()
+        .unwrap()
+        .trim();
+    assert_has(&code, &[&format!("{target}:"), "GetVar arg(1)"]);
+    assert_eq!(warnings_for(last, v(1689)), [] as [String; 0]);
+    // (a text weight counts as 0 and has a case on every build)
+    for build in [1688, 1689] {
+        let code = compile_on(
+            "/proc/f(a, b)\n\treturn pick(\"x\"; a, 3; b)\n",
+            "",
+            "f",
+            v(build),
+        );
+        assert!(table(&code).contains(" 0 =>"), "{}", code);
+    }
+
+    // Before: one case (a's third of the draw) and the default, with b's
+    // value still written
+    let code = compile_on(middle, "", "f", v(1688));
+    let cases = table(&code);
+    assert_eq!(cases.matches("=>").count(), 2, "{}", cases);
+    assert!(cases.contains("21845 =>"), "{}", cases);
     assert!(code.contains("GetVar arg(1)"), "{}", code);
     // A final zero-weight entry would jump outside the proc in DreamMaker.
     // Emit a compatibility warning and use a valid weighted entry.
-    let source = "/proc/f(a, b)\n\treturn pick(1; a, 0; b)\n";
-    let code = compile(source, "", "f");
-    let table = code.lines().find(|l| l.starts_with("PickSwitch")).unwrap();
-    assert_eq!(table.matches("=>").count(), 1, "{}", table);
-    let target = table
+    let code = compile_on(last, "", "f", v(1688));
+    let cases = table(&code);
+    assert_eq!(cases.matches("=>").count(), 1, "{}", cases);
+    let target = cases
         .split("default => ")
         .nth(1)
         .unwrap()
         .trim_end_matches([',', ' ']);
     assert_has(&code, &[&format!("{target}:"), "GetVar arg(0)"]);
-    let warnings = warnings_for(source, dmasm::ByondVersion::LATEST);
+    let warnings = warnings_for(last, v(1688));
     assert!(
         warnings.iter().any(|w| w.contains("zero-weight entry")),
         "{:?}",
@@ -1733,7 +1774,6 @@ fn warnings_of(code: &str, ty: &str, name: &str, byond: dmasm::ByondVersion) -> 
 fn warnings_about_byonds_bugs_are_told_from_the_rest() {
     let bugs = |code: &str, build| -> Vec<String> {
         let compiled = compiled_of(code, "", "f", dmasm::ByondVersion::new(516, build));
-        assert!(!compiled.warnings.is_empty(), "{}", code);
         compiled
             .byond_bugs
             .into_iter()
@@ -1760,10 +1800,13 @@ fn warnings_about_byonds_bugs_are_told_from_the_rest() {
     assert!(compiled.byond_bugs[0]
         .text
         .ends_with("leaves the division out"));
-    // Compatibility differences do not count as BYOND bugs.
+    // 516.1689 fixes the jump.
     assert_eq!(bugs(weights, 1689), [] as [String; 0]);
+    // Compatibility differences do not count as BYOND bugs.
     let wide = "/proc/f(a)\n\treturn (-1e10) ^ a\n";
     assert_eq!(bugs(wide, 1688), [] as [String; 0]);
+    let compiled = compiled_of(wide, "", "f", dmasm::ByondVersion::new(516, 1688));
+    assert!(!compiled.warnings.is_empty());
 }
 
 #[test]

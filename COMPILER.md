@@ -111,7 +111,7 @@ receiver for `a.b.x`. dmasm matches these reuse and invalidation rules.
 | Empty proc at a file's end | Names the next included file in debug info | Uses the proc's source file |
 | `*p[i] = x` from 516.1668 | Drops the index and writes through the cache | Writes the indexed element |
 | Out-of-range constants in `&`, `\|`, `^`, `<<`, `>>` | Inconsistent, build-dependent 24-bit conversion | Uses the low 24 bits of the nearest 32-bit integer |
-| `pick()` ending in a zero-weight entry | Jumps outside the proc if no earlier entry is selected | Selects the last entry whose weight is not a constant zero |
+| `pick()` ending in a zero-weight entry, before 516.1689 | Jumps outside the proc if no earlier entry is selected | Selects the last entry whose weight is not a constant zero |
 
 Hexadecimal literals longer than eight digits and octal literals exceeding i32
 are rejected. DreamMaker's conversion is unusual (`0x100000000` becomes `2**60`)
@@ -184,7 +184,7 @@ quirks, and zero-weight `pick()` endings before 516.1689.
 
 Warnings cover parameter-default division, safe-call receivers, logical assignment
 before 516.1673, indexed pointer assignment from 516.1668, out-of-range bit operands,
-zero-weight `pick()` endings, and platform-sensitive angle/color folding.
+zero-weight `pick()` endings before 516.1689, and platform-sensitive angle/color folding.
 
 Two copied quirks also warn:
 
