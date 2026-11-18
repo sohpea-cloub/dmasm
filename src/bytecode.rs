@@ -25,10 +25,14 @@ pub enum ReferenceKind {
     Value(u8),
 }
 
-/// An operand word that refers to an entry of one of the world's tables.
+/// An operand that refers to an entry of one of the world's tables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reference {
+    /// The word that holds the id. A value's id is 24 bits wide: this word
+    /// has the low 16, and the word before it has the rest above its tag.
     pub word_offset: u32,
+    /// The id referred to.
+    pub id: u32,
     pub kind: ReferenceKind,
 }
 
@@ -145,9 +149,19 @@ impl<'a> Cursor<'a> {
 
     /// Step over one word, recording what it refers to.
     pub(crate) fn reference(&mut self, kind: ReferenceKind) -> Result<(), BytecodeError> {
+        self.reference_above(kind, 0)
+    }
+
+    /// Step over the word that holds an id's low bits, `high` being the
+    /// bits above them.
+    fn reference_above(&mut self, kind: ReferenceKind, high: u32) -> Result<(), BytecodeError> {
         let word_offset = self.offset();
-        self.skip(1)?;
-        self.references.push(Reference { word_offset, kind });
+        let id = high | self.read()?;
+        self.references.push(Reference {
+            word_offset,
+            id,
+            kind,
+        });
         Ok(())
     }
 
@@ -227,13 +241,16 @@ pub(crate) fn scan_label(
 }
 
 pub(crate) fn scan_value(cursor: &mut Cursor<'_>) -> Result<(), BytecodeError> {
-    match cursor.read()? & 0xFF {
+    let tag = cursor.read()?;
+    // The top 8 bits of a value's 24 bits of data are above the tag
+    let high = (tag & 0xFF00) << 8;
+    match tag & 0xFF {
         // null: no data
         0x00 => cursor.skip(1)?,
-        0x06 => cursor.reference(ReferenceKind::String)?,
+        0x06 => cursor.reference_above(ReferenceKind::String, high)?,
         // a number: two words
         0x2A => cursor.skip(2)?,
-        tag => cursor.reference(ReferenceKind::Value(tag as u8))?,
+        tag => cursor.reference_above(ReferenceKind::Value(tag as u8), high)?,
     }
     Ok(())
 }
@@ -414,9 +431,10 @@ mod tests {
     #[test]
     fn reports_what_operands_refer_to() {
         let bytecode = [
-            // "text"; a proc's path; a type; a number; null
+            // "text", its id over 16 bits; a proc's path; a type; a number;
+            // null
             Opcode::PushVal.word(),
-            0x06,
+            0x0306,
             11,
             Opcode::PushVal.word(),
             0x26,
@@ -460,18 +478,12 @@ mod tests {
             .unwrap()
             .references
             .iter()
-            .map(|reference| {
-                (
-                    reference.word_offset,
-                    bytecode[reference.word_offset as usize],
-                    reference.kind,
-                )
-            })
+            .map(|reference| (reference.word_offset, reference.id, reference.kind))
             .collect();
         assert_eq!(
             references,
             vec![
-                (2, 11, ReferenceKind::String),
+                (2, 0x3_000B, ReferenceKind::String),
                 (5, 12, ReferenceKind::Value(0x26)),
                 (8, 13, ReferenceKind::Value(0x20)),
                 (19, 14, ReferenceKind::Global),
