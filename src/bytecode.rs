@@ -6,6 +6,32 @@ pub struct LabelOperand {
     pub target: u32,
 }
 
+/// What an operand word refers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReferenceKind {
+    /// A string id: the text of a format, a file name, a string value.
+    String,
+    /// A string id naming a var of the object an access goes through.
+    VarName,
+    /// A string id naming the proc or verb a call looks up on its object
+    /// (`dynamic_proc`, `dynamic_verb`).
+    ProcName,
+    /// The id of the proc a call names.
+    Proc,
+    /// A global var id.
+    Global,
+    /// The data word of a value with this tag (a type, a proc's path, a
+    /// resource, a prefab), other than text or a number.
+    Value(u8),
+}
+
+/// An operand word that refers to an entry of one of the world's tables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reference {
+    pub word_offset: u32,
+    pub kind: ReferenceKind,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstructionSpan<'a> {
     pub offset: u32,
@@ -17,6 +43,9 @@ pub struct InstructionSpan<'a> {
 pub struct ScannedBytecode<'a> {
     pub instructions: Vec<InstructionSpan<'a>>,
     pub label_operands: Vec<LabelOperand>,
+    /// The operand words that refer to strings, procs, global vars and
+    /// tagged values, in the order they appear.
+    pub references: Vec<Reference>,
     /// Some operand is `caller` or `callee`. A raw word search cannot say
     /// this: 0xFFF0 is also a fine proc id, type id or half of a float.
     pub reads_caller: bool,
@@ -55,6 +84,7 @@ pub fn scan(bytecode: &[u32]) -> Result<ScannedBytecode<'_>, BytecodeError> {
     Ok(ScannedBytecode {
         instructions,
         label_operands,
+        references: cursor.references,
         reads_caller: cursor.reads_caller,
     })
 }
@@ -72,6 +102,7 @@ pub(crate) struct Cursor<'a> {
     bytecode: &'a [u32],
     offset: usize,
     reads_caller: bool,
+    references: Vec<Reference>,
 }
 
 impl<'a> Cursor<'a> {
@@ -80,6 +111,7 @@ impl<'a> Cursor<'a> {
             bytecode,
             offset: 0,
             reads_caller: false,
+            references: Vec::new(),
         }
     }
 
@@ -109,6 +141,14 @@ impl<'a> Cursor<'a> {
             .ok_or(BytecodeError::UnexpectedEnd {
                 offset: self.offset(),
             })
+    }
+
+    /// Step over one word, recording what it refers to.
+    pub(crate) fn reference(&mut self, kind: ReferenceKind) -> Result<(), BytecodeError> {
+        let word_offset = self.offset();
+        self.skip(1)?;
+        self.references.push(Reference { word_offset, kind });
+        Ok(())
     }
 
     pub(crate) fn skip(&mut self, words: usize) -> Result<(), BytecodeError> {
@@ -158,10 +198,10 @@ macro_rules! scan_operand {
         $cursor.skip(1)?
     };
     ($cursor:expr, $labels:expr, DMString) => {
-        $cursor.skip(1)?
+        $cursor.reference(crate::bytecode::ReferenceKind::String)?
     };
     ($cursor:expr, $labels:expr, Proc) => {
-        $cursor.skip(1)?
+        $cursor.reference(crate::bytecode::ReferenceKind::Proc)?
     };
     ($cursor:expr, $labels:expr, TypeFilter) => {
         $cursor.skip(1)?
@@ -187,10 +227,13 @@ pub(crate) fn scan_label(
 }
 
 pub(crate) fn scan_value(cursor: &mut Cursor<'_>) -> Result<(), BytecodeError> {
-    let tag = cursor.read()? & 0xFF;
-    cursor.skip(1)?;
-    if tag == 0x2A {
-        cursor.skip(1)?;
+    match cursor.read()? & 0xFF {
+        // null: no data
+        0x00 => cursor.skip(1)?,
+        0x06 => cursor.reference(ReferenceKind::String)?,
+        // a number: two words
+        0x2A => cursor.skip(2)?,
+        tag => cursor.reference(ReferenceKind::Value(tag as u8))?,
     }
     Ok(())
 }
@@ -255,8 +298,7 @@ pub(crate) fn scan_variable(cursor: &mut Cursor<'_>) -> Result<(), BytecodeError
     let param = cursor.peek()?;
 
     if !access_modifiers::is_access_modifier(param) {
-        cursor.skip(1)?;
-        return Ok(());
+        return cursor.reference(ReferenceKind::VarName);
     }
 
     match cursor.read()? {
@@ -272,14 +314,13 @@ pub(crate) fn scan_variable(cursor: &mut Cursor<'_>) -> Result<(), BytecodeError
 
         access_modifiers::Caller | access_modifiers::Callee => cursor.reads_caller = true,
 
-        access_modifiers::Arg
-        | access_modifiers::Local
-        | access_modifiers::Global
-        | access_modifiers::DynamicProc
-        | access_modifiers::DynamicVerb
-        | access_modifiers::StaticProc
-        | access_modifiers::StaticVerb => {
-            cursor.skip(1)?;
+        access_modifiers::Arg | access_modifiers::Local => cursor.skip(1)?,
+        access_modifiers::Global => cursor.reference(ReferenceKind::Global)?,
+        access_modifiers::DynamicProc | access_modifiers::DynamicVerb => {
+            cursor.reference(ReferenceKind::ProcName)?
+        }
+        access_modifiers::StaticProc | access_modifiers::StaticVerb => {
+            cursor.reference(ReferenceKind::Proc)?
         }
 
         access_modifiers::SetCache => {
@@ -368,6 +409,79 @@ mod tests {
         assert_eq!(reads_caller(&nested), Ok(true));
         assert_eq!(reads_caller(&same_word), Ok(false));
         assert_eq!(reads_caller(&[Opcode::End.word()]), Ok(false));
+    }
+
+    #[test]
+    fn reports_what_operands_refer_to() {
+        let bytecode = [
+            // "text"; a proc's path; a type; a number; null
+            Opcode::PushVal.word(),
+            0x06,
+            11,
+            Opcode::PushVal.word(),
+            0x26,
+            12,
+            Opcode::PushVal.word(),
+            0x20,
+            13,
+            Opcode::PushVal.word(),
+            0x2A,
+            0x3F80,
+            0,
+            Opcode::PushVal.word(),
+            0x00,
+            0,
+            // cache = global 14; cache.<var 15>.<proc 16>(1 argument)
+            Opcode::Call.word(),
+            access_modifiers::SetCache,
+            access_modifiers::Global,
+            14,
+            access_modifiers::SetCache,
+            15,
+            access_modifiers::DynamicProc,
+            16,
+            1,
+            Opcode::CallStatement.word(),
+            access_modifiers::StaticProc,
+            17,
+            0,
+            Opcode::CallGlob.word(),
+            2,
+            18,
+            Opcode::Format.word(),
+            19,
+            1,
+            Opcode::GetVar.word(),
+            access_modifiers::Local,
+            20,
+            Opcode::End.word(),
+        ];
+        let references: Vec<(u32, u32, ReferenceKind)> = scan(&bytecode)
+            .unwrap()
+            .references
+            .iter()
+            .map(|reference| {
+                (
+                    reference.word_offset,
+                    bytecode[reference.word_offset as usize],
+                    reference.kind,
+                )
+            })
+            .collect();
+        assert_eq!(
+            references,
+            vec![
+                (2, 11, ReferenceKind::String),
+                (5, 12, ReferenceKind::Value(0x26)),
+                (8, 13, ReferenceKind::Value(0x20)),
+                (19, 14, ReferenceKind::Global),
+                (21, 15, ReferenceKind::VarName),
+                (23, 16, ReferenceKind::ProcName),
+                (27, 17, ReferenceKind::Proc),
+                (31, 18, ReferenceKind::Proc),
+                (33, 19, ReferenceKind::String),
+            ]
+        );
     }
 
     #[test]

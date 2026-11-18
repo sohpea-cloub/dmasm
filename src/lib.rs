@@ -13,7 +13,8 @@ mod parser;
 pub mod reload;
 
 pub use bytecode::{
-    reads_caller, scan, BytecodeError, InstructionSpan, LabelOperand, ScannedBytecode,
+    reads_caller, scan, BytecodeError, InstructionSpan, LabelOperand, Reference, ReferenceKind,
+    ScannedBytecode,
 };
 pub use disassembler::DebugData;
 pub use instructions::{Instruction, Opcode};
